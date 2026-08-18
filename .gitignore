@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.cache/
+
+# The library holds the user's own CSVs; keep the directory, not its contents.
+library/*
+!library/.gitkeep

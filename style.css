@@ -1,0 +1,265 @@
+/*
+ * Extended LoRA Details
+ *
+ * Only Gradio's own theme variables are used here, so a user's chosen theme
+ * (light, dark or custom) keeps applying to the panel.
+ */
+
+.eld-panel {
+    margin-top: 1em;
+}
+
+.eld-panel .eld-tabs {
+    margin-top: 0.5em;
+}
+
+/* --------------------------------------------------------------- notices */
+
+.eld-notice {
+    padding: 0.6em 0.9em;
+    margin: 0.4em 0;
+    border-radius: var(--radius-sm);
+    border-left: 3px solid var(--border-color-primary);
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.eld-notice-ok {
+    border-left-color: var(--color-accent, var(--primary-500));
+}
+
+.eld-notice-error {
+    border-left-color: var(--error-text-color, #e5484d);
+}
+
+.eld-notice-empty {
+    border-left-color: var(--border-color-accent);
+    color: var(--body-text-color-subdued);
+}
+
+.eld-notice code {
+    background: var(--background-fill-primary);
+    padding: 0.1em 0.35em;
+    border-radius: var(--radius-xs);
+    font-size: 0.9em;
+}
+
+.eld-muted {
+    color: var(--body-text-color-subdued);
+    font-weight: normal;
+}
+
+/* ---------------------------------------------------------------- chips */
+
+.eld-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    margin: 0.4em 0 0.2em;
+}
+
+.eld-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4em;
+    padding: 0.2em 0.6em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+}
+
+.eld-chip code {
+    color: var(--body-text-color);
+    overflow-wrap: anywhere;
+}
+
+/* --------------------------------------------------------------- tables */
+
+.eld-table {
+    width: 100%;
+    border-collapse: collapse;
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+}
+
+.eld-table th,
+.eld-table td {
+    padding: 0.35em 0.8em;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid var(--border-color-primary);
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.eld-table th {
+    white-space: nowrap;
+    color: var(--body-text-color-subdued);
+    font-weight: 600;
+    width: 1%;
+}
+
+.eld-table td {
+    white-space: pre-wrap;
+}
+
+.eld-table.eld-grid th {
+    width: auto;
+}
+
+.eld-table .eld-num {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.eld-table a {
+    color: var(--link-text-color, var(--secondary-500));
+}
+
+.eld-source + .eld-source {
+    margin-top: 1.2em;
+}
+
+.eld-source-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--body-text-color);
+    padding-bottom: 0.3em;
+}
+
+.eld-overview {
+    max-height: 26em;
+    overflow-y: auto;
+}
+
+/* --------------------------------------------------------------- prompts */
+
+.eld-count {
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    padding: 0.2em 0 0.4em;
+}
+
+.eld-prompt-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 28em;
+    overflow-y: auto;
+}
+
+.eld-prompt-list li {
+    display: flex;
+    gap: 0.75em;
+    padding: 0.5em 0.2em;
+    border-bottom: 1px solid var(--border-color-primary);
+    font-size: var(--text-sm);
+    color: var(--body-text-color);
+}
+
+.eld-prompt-index {
+    flex: 0 0 2.2em;
+    text-align: right;
+    color: var(--body-text-color-subdued);
+    font-variant-numeric: tabular-nums;
+}
+
+.eld-prompt-text {
+    flex: 1 1 auto;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.eld-more {
+    padding: 0.5em 0.2em;
+    font-size: var(--text-sm);
+}
+
+/* ------------------------------------------------------------------ jobs */
+
+.eld-job {
+    padding: 0.7em 0.9em;
+    margin-bottom: 0.6em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-sm);
+    background: var(--background-fill-secondary);
+    color: var(--body-text-color);
+}
+
+.eld-job-head {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;
+    flex-wrap: wrap;
+    font-size: var(--text-sm);
+}
+
+.eld-badge {
+    padding: 0.1em 0.6em;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-color-primary);
+    background: var(--background-fill-primary);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.eld-badge-running {
+    border-color: var(--color-accent, var(--primary-500));
+    color: var(--color-accent, var(--primary-500));
+}
+
+.eld-badge-failed {
+    border-color: var(--error-text-color, #e5484d);
+    color: var(--error-text-color, #e5484d);
+}
+
+.eld-job-msg,
+.eld-job-summary {
+    font-size: var(--text-sm);
+    padding-top: 0.3em;
+    overflow-wrap: anywhere;
+}
+
+.eld-bar {
+    height: 6px;
+    margin: 0.5em 0 0.2em;
+    border-radius: var(--radius-lg);
+    background: var(--background-fill-primary);
+    overflow: hidden;
+}
+
+.eld-bar-fill {
+    height: 100%;
+    background: var(--color-accent, var(--primary-500));
+    transition: width 0.3s ease;
+}
+
+.eld-log {
+    max-height: 14em;
+    margin: 0.5em 0 0;
+    padding: 0.6em 0.8em;
+    overflow: auto;
+    border-radius: var(--radius-sm);
+    background: var(--background-fill-primary);
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    white-space: pre;
+}
+
+/* -------------------------------------------------------------- settings */
+
+.eld-settings-block {
+    gap: 0.4em;
+}
+
+.eld-library-status,
+.eld-upload-status {
+    font-size: var(--text-sm);
+}

@@ -1,0 +1,197 @@
+# Extended LoRA Details
+
+A [Stable Diffusion WebUI Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
+extension that shows **CSV-sourced Civitai details for a LoRA inside the LoRA
+card's own details dialog** — matched to the file by its SHA256 hash.
+
+It extends the existing dialog rather than replacing it: the stock fields
+(description, preset, training tags, activation text, preferred weight, notes)
+are untouched, and a collapsible **Extended details** panel is added below them.
+
+<!-- ------------------------------------------------------------------ -->
+
+## What it does
+
+* **Hash → CSV lookup.** Every LoRA is identified by the SHA256 of the whole
+  file. That digest is looked up in a library of user-supplied CSVs.
+* **Extends the details view.** The matched rows are rendered in a collapsible,
+  tabbed panel inside the *edit metadata* dialog, so large libraries stay
+  navigable: **Overview**, **Trigger words**, **Prompts** and **Raw CSV row**.
+* **Upload CSVs from the settings menu.** *Settings → Extended LoRA Details*
+  has a file picker that copies a CSV into the extension's library.
+* **On-demand Civitai fetch, in the background.** The *Extended LoRA Details*
+  tab runs a fetch over any folder you pick. It hashes each file, resolves it
+  through Civitai's `by-hash` endpoint, and writes a CSV into the library —
+  on a worker thread, so generation keeps working.
+* **Refresh for new content.** A fetch defaults to *incremental*: files whose
+  hash is already *resolved* in the library are skipped, so re-running it on a
+  folder only costs requests for what is new. Files Civitai could not resolve
+  last time are retried, since a model may have appeared since.
+* **Standard Gradio components throughout**, styled only with Gradio's own theme
+  variables, so your theme keeps applying.
+
+<!-- ------------------------------------------------------------------ -->
+
+## Install
+
+*Extensions → Install from URL*:
+
+```
+https://github.com/RJSprod/SD-ForgeNeo-ExtendedLoraDetails
+```
+
+or clone into `extensions/`:
+
+```bash
+git clone https://github.com/RJSprod/SD-ForgeNeo-ExtendedLoraDetails extensions/SD-ForgeNeo-ExtendedLoraDetails
+```
+
+Then restart the WebUI (a *Reload UI* is enough after the first start).
+
+<!-- ------------------------------------------------------------------ -->
+
+## Using it
+
+### 1. Get a CSV into the library
+
+Either **upload one you already have** — *Settings → Extended LoRA Details →
+Add a CSV to the library* — or **generate one**: open the *Extended LoRA
+Details* tab, go to *Fetch from Civitai*, pick a folder and press **Start
+fetch**. Progress and a live log are on the *Jobs* tab.
+
+The library is just a directory of CSVs (`<extension>/library` by default,
+changeable in settings). Every `.csv` under it is indexed, recursively.
+
+### 2. Open a LoRA card's details
+
+On the LoRA tab, click a card's ⚙ (*edit metadata*) icon. The **Extended
+details** panel sits below the stock fields:
+
+| Tab | Contents |
+| --- | --- |
+| **Overview** | Every field from the matched row(s): model name, Civitai link, base model, trigger words, and any extra columns your CSV carries. |
+| **Trigger words** | Clickable chips — clicking one adds or removes it from the dialog's *Activation text*. Buttons set or append the whole set. |
+| **Prompts** | A searchable selector over every gallery prompt, with ‹ › stepping, a copy button, and *Append to prompt* / *Replace prompt*. An *All prompts* accordion lists them. |
+| **Raw CSV row** | The matched row(s) as JSON, for when a column is not displayed elsewhere. |
+
+The panel header summarises the match, and the panel opens itself when there is
+one (configurable).
+
+<!-- ------------------------------------------------------------------ -->
+
+## CSV format
+
+The reader is deliberately forgiving — column names are matched
+case-insensitively and ignoring separators.
+
+| Purpose | Recognised columns |
+| --- | --- |
+| **Identity (hash)** | `sha256`, `hash`, `file_hash`, `checksum`, `addnet_hash`, `shorthash`, `model_hash`, `sshs_model_hash`, `autov2` |
+| **Identity (path)** | `safetensor_file`, `filename`, `path`, `relative_path`, `lora_file`, … |
+| Model name | `civitai_model_name`, `model_name`, `name`, `title` |
+| Trigger words | `trigger_words`, `trained_words`, `activation_text`, `keywords`, `tags` |
+| Prompts | `positive_prompt_1..N`, `prompt_1..N`, `prompt` |
+| Negative prompt | `negative_prompt`, `negative_text` |
+| Link | `civitai_url`, `url`, `model_url` |
+
+**Anything not recognised is still shown**, under the row's field table — no
+column from your CSV is dropped.
+
+Matching is tried in this order: **full SHA256 → short/AddNet hash → file path →
+file name**. A CSV without a hash column therefore still works; it just matches
+by name. To match by hash, include a `sha256` column — the bundled fetcher
+always writes one.
+
+### Columns the bundled fetcher writes
+
+```
+safetensor_file, sha256, addnet_hash, civitai_model_name, civitai_model_id,
+civitai_version_id, civitai_version_name, base_model, civitai_url,
+trigger_words, status, note, positive_prompt_1 … positive_prompt_N
+```
+
+<!-- ------------------------------------------------------------------ -->
+
+## Command line
+
+The same fetcher runs standalone, without the WebUI:
+
+```bash
+python tools/civitai_lora_csv.py --root /path/to/loras
+python tools/civitai_lora_csv.py --root /path/to/loras --base-model "Krea 2" --strict
+```
+
+With no `--output` it writes into the extension's library directory, so the
+result is picked up on the next reload. `CIVITAI_API_KEY` is honoured, as is
+`--api-key`.
+
+### Identity rules
+
+These are unchanged from the original script this was built from:
+
+* every local file is SHA256-hashed and resolved through
+  `/api/v1/model-versions/by-hash/{sha256}`;
+* if the matched version exposes SHA256 values, **one of them must equal the
+  local digest** — a disagreement is rejected rather than trusted;
+* the returned **version id** is authoritative for trigger words and for
+  filtering the gallery, so sibling versions on the same model page cannot bleed
+  into each other;
+* `--base-model` rejects versions Civitai explicitly labels as something else;
+  with `--require-base-model-label`, unlabeled exact matches are rejected too.
+
+Gallery pagination is followed to the end, `nextPage` URLs outside `civitai.com`
+are refused rather than followed with credentials, and repeated pages stop the
+walk defensively. The CSV is written atomically.
+
+<!-- ------------------------------------------------------------------ -->
+
+## Settings
+
+*Settings → Extended LoRA Details*
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| Show the extended details panel | on | needs a *Reload UI* |
+| Library directory | `<extension>/library` | takes effect immediately |
+| Add a CSV to the library | — | the uploader |
+| Match by SHA256 first | on | falls back to path, then name |
+| Compute a missing SHA256 when the dialog opens | on | turn off and use *Precompute hashes* instead |
+| Open the panel automatically | off | |
+| Open it automatically when there is a match | on | |
+| Prompts rendered in the "All prompts" list | 50 | the selector always reaches every prompt |
+| Characters of each prompt in the selector | 90 | |
+| Civitai API key | — | falls back to `CIVITAI_API_KEY` |
+| Delay between requests / timeout / images per version | 0.15 s / 30 s / all | |
+| Only accept this base model | — | e.g. `Krea 2` |
+| Require an explicit base-model label | off | |
+
+<!-- ------------------------------------------------------------------ -->
+
+## Notes
+
+* **First open of a large LoRA takes a moment** while its SHA256 is computed.
+  The digest is cached in `.cache/hashes.json` (keyed by size and mtime), so it
+  only happens once. Run **Precompute hashes** on the extension tab to get it
+  over with for the whole collection in the background.
+* The SHA256 used here is the digest of the *whole file*. That is deliberately
+  not the same as Forge's own LoRA hash, which prefers the kohya
+  `sshs_model_hash` from the safetensors header — Civitai's `by-hash` endpoint
+  wants the full-file digest. Both are indexed, so CSVs from other tools that
+  carry an AddNet hash still match.
+* Scans run one at a time on a single worker thread, and are cancellable from
+  the *Fetch from Civitai* tab.
+* If the built-in LoRA extension is disabled, the panel quietly does not appear;
+  the rest of the extension still loads.
+
+<!-- ------------------------------------------------------------------ -->
+
+## Tests
+
+```bash
+python tests/test_extended_lora_details.py     # or: pytest tests/
+```
+
+These cover CSV parsing and column aliasing, hash/path/name matching, the
+Civitai identity rules, incremental refresh, atomic CSV writes, and the job
+manager. They need no WebUI and make no network calls — the Civitai client is
+stubbed.
