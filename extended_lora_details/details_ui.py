@@ -19,7 +19,7 @@ import re
 
 import gradio as gr
 
-from . import hashing, render
+from . import hashing, images, jobs, render
 from .common import lora_directories, normalize_path, opt, report, truncate
 from .library import get_library
 
@@ -113,13 +113,15 @@ def gather(page, name: str) -> dict:
     )
 
     prompts: list[str] = []
+    prompt_images: list[tuple[str, str]] = []
     prompt_sources: list[str] = []
     triggers: list[tuple[str, str]] = []
     seen_triggers: set[str] = set()
     for record in records:
-        for prompt in record.prompts:
-            if prompt not in prompts:
-                prompts.append(prompt)
+        for entry in record.entries:
+            if entry.text and entry.text not in prompts:
+                prompts.append(entry.text)
+                prompt_images.append((entry.image_url, entry.image_id))
                 prompt_sources.append(record.source)
         for word in record.trigger_words:
             if word not in seen_triggers:
@@ -135,6 +137,7 @@ def gather(page, name: str) -> dict:
         "records": records,
         "how": how,
         "prompts": prompts,
+        "prompt_images": prompt_images,
         "prompt_sources": prompt_sources,
         "triggers": triggers,
         "identity": identity,
@@ -159,6 +162,38 @@ def _clamp(index, total: int) -> int:
     if total <= 0:
         return 0
     return max(0, min(total - 1, value))
+
+
+def _image_state(prompt_images: list, index: int):
+    """Status HTML plus the preview update for the prompt at ``index``.
+
+    Presence is a filesystem check, so an image the user deleted goes straight
+    back to being offered as a download.
+    """
+    url, image_id = ("", "")
+    if 0 <= index < len(prompt_images):
+        url, image_id = prompt_images[index]
+
+    if not url:
+        return (
+            render.notice("This prompt has no image URL in the library. Re-run a Civitai fetch to pick one up.", kind="empty"),
+            gr.update(value=None, visible=False),
+            gr.update(interactive=False),
+        )
+
+    local = images.find_local(url, image_id)
+    if local is not None:
+        return (
+            render.image_status_html(downloaded=True, name=local.name, url=url),
+            gr.update(value=str(local), visible=True),
+            gr.update(interactive=False, value="Downloaded"),
+        )
+
+    return (
+        render.image_status_html(downloaded=False, name="", url=url),
+        gr.update(value=None, visible=False),
+        gr.update(interactive=True, value="Download this image"),
+    )
 
 
 def _raw_json(records) -> str:
@@ -188,6 +223,7 @@ def build_panel(editor) -> None:
     tabname = getattr(editor, "tabname", "txt2img")
 
     prompts_state = gr.State([])
+    images_state = gr.State([])
 
     with gr.Accordion("Extended details", open=open_by_default, elem_classes=["eld-panel"]) as panel:
         summary = gr.HTML(elem_classes=["eld-summary"])
@@ -208,35 +244,47 @@ def build_panel(editor) -> None:
                     interactive=False,
                     show_copy_button=True,
                 )
-                with gr.Row():
-                    use_triggers = gr.Button("Use as activation text", size="sm")
-                    append_triggers = gr.Button("Append to activation text", size="sm")
+                with gr.Row(elem_classes=["eld-actions"]):
+                    use_triggers = gr.Button("Use as activation text")
+                    append_triggers = gr.Button("Append to activation text")
 
             with gr.TabItem("Prompts", elem_classes=["eld-tab"]):
                 prompt_meta = gr.HTML(elem_classes=["eld-prompt-meta"])
-                with gr.Row():
-                    with gr.Column(scale=8):
-                        prompt_selector = gr.Dropdown(
-                            label="Prompt",
-                            choices=[],
-                            value=None,
-                            interactive=True,
-                            filterable=True,
-                        )
-                    with gr.Column(scale=1, min_width=110):
-                        with gr.Row():
-                            previous_button = gr.Button("‹", size="sm")
-                            next_button = gr.Button("›", size="sm")
+
+                prompt_selector = gr.Dropdown(
+                    label="Prompt",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    filterable=True,
+                )
+                with gr.Row(elem_classes=["eld-actions", "eld-stepper"]):
+                    previous_button = gr.Button("‹  Previous")
+                    next_button = gr.Button("Next  ›")
+
                 prompt_box = gr.Textbox(
                     label="Positive prompt",
-                    lines=6,
-                    max_lines=14,
+                    lines=8,
+                    max_lines=20,
                     interactive=False,
                     show_copy_button=True,
                 )
-                with gr.Row():
-                    append_prompt = gr.Button("Append to prompt", size="sm")
-                    replace_prompt = gr.Button("Replace prompt", size="sm", variant="primary")
+                with gr.Row(elem_classes=["eld-actions"]):
+                    append_prompt = gr.Button("Append to prompt")
+                    replace_prompt = gr.Button("Replace prompt", variant="primary")
+
+                with gr.Group(elem_classes=["eld-image-block"]):
+                    image_status = gr.HTML(elem_classes=["eld-image-status"])
+                    with gr.Row(elem_classes=["eld-actions"]):
+                        download_image = gr.Button("Download this image", variant="primary")
+                        download_all_images = gr.Button("Download all images for this LoRA")
+                    image_preview = gr.Image(
+                        label="Gallery image",
+                        visible=False,
+                        interactive=False,
+                        show_download_button=True,
+                        elem_classes=["eld-image-preview"],
+                    )
 
                 with gr.Accordion("All prompts", open=False, elem_classes=["eld-all-prompts"]):
                     prompt_list = gr.HTML()
@@ -259,6 +307,11 @@ def build_panel(editor) -> None:
             "",
             "{}",
             [],
+            [],
+            "",
+            gr.update(value=None, visible=False),
+            gr.update(interactive=False),
+            gr.update(interactive=False),
         ]
 
         try:
@@ -287,6 +340,14 @@ def build_panel(editor) -> None:
         first_prompt = prompts[0] if prompts else ""
         should_open = open_by_default or (bool(records) and bool(opt("eld_open_on_match", False)))
 
+        prompt_images = data["prompt_images"]
+        status, preview, download_button = _image_state(prompt_images, 0) if prompts else ("", gr.update(value=None, visible=False), gr.update(interactive=False))
+        downloadable = sum(1 for url, _ in prompt_images if url)
+        bulk = gr.update(
+            interactive=bool(downloadable),
+            value=f"Download all {downloadable} images" if downloadable else "No images in the library",
+        )
+
         return [
             gr.update(label=label, open=should_open),
             render.summary_html(matched=bool(records), how=data["how"], records=records, identity=data["identity"]),
@@ -299,6 +360,11 @@ def build_panel(editor) -> None:
             render.prompt_list_html(prompts, limit=list_limit),
             _raw_json(records),
             prompts,
+            prompt_images,
+            status,
+            preview,
+            download_button,
+            bulk,
         ]
 
     outputs = [
@@ -313,6 +379,11 @@ def build_panel(editor) -> None:
         prompt_list,
         raw_row,
         prompts_state,
+        images_state,
+        image_status,
+        image_preview,
+        download_image,
+        download_all_images,
     ]
 
     # A separate listener on the existing trigger: the stock dialog keeps working
@@ -321,36 +392,95 @@ def build_panel(editor) -> None:
 
     # ------------------------------------------------------------ navigation
 
-    def select_prompt(index, prompts):
+    def select_prompt(index, prompts, prompt_images):
         prompts = prompts or []
         position = _clamp(index, len(prompts))
         text = prompts[position] if prompts else ""
-        return text, render.prompt_meta_html(len(prompts), position, [])
+        status, preview, button = _image_state(prompt_images or [], position)
+        return text, render.prompt_meta_html(len(prompts), position, []), status, preview, button
+
+    navigation_outputs = [prompt_box, prompt_meta, image_status, image_preview, download_image]
 
     prompt_selector.change(
         fn=select_prompt,
-        inputs=[prompt_selector, prompts_state],
-        outputs=[prompt_box, prompt_meta],
+        inputs=[prompt_selector, prompts_state, images_state],
+        outputs=navigation_outputs,
         show_progress=False,
     )
 
-    def step(index, prompts, delta):
+    def step(index, prompts, prompt_images, delta):
         prompts = prompts or []
         if not prompts:
-            return gr.update(), "", render.prompt_meta_html(0, 0, [])
+            return (gr.update(), "", render.prompt_meta_html(0, 0, []), "", gr.update(visible=False), gr.update(interactive=False))
         position = (_clamp(index, len(prompts)) + delta) % len(prompts)
-        return position, prompts[position], render.prompt_meta_html(len(prompts), position, [])
+        status, preview, button = _image_state(prompt_images or [], position)
+        return position, prompts[position], render.prompt_meta_html(len(prompts), position, []), status, preview, button
 
     previous_button.click(
-        fn=lambda index, prompts: step(index, prompts, -1),
-        inputs=[prompt_selector, prompts_state],
-        outputs=[prompt_selector, prompt_box, prompt_meta],
+        fn=lambda index, prompts, prompt_images: step(index, prompts, prompt_images, -1),
+        inputs=[prompt_selector, prompts_state, images_state],
+        outputs=[prompt_selector, *navigation_outputs],
         show_progress=False,
     )
     next_button.click(
-        fn=lambda index, prompts: step(index, prompts, 1),
-        inputs=[prompt_selector, prompts_state],
-        outputs=[prompt_selector, prompt_box, prompt_meta],
+        fn=lambda index, prompts, prompt_images: step(index, prompts, prompt_images, 1),
+        inputs=[prompt_selector, prompts_state, images_state],
+        outputs=[prompt_selector, *navigation_outputs],
+        show_progress=False,
+    )
+
+    # ------------------------------------------------------- image downloads
+
+    def fetch_current_image(index, prompt_images):
+        prompt_images = prompt_images or []
+        position = _clamp(index, len(prompt_images))
+        if not (0 <= position < len(prompt_images)):
+            return "", gr.update(visible=False), gr.update(interactive=False)
+
+        url, image_id = prompt_images[position]
+        try:
+            result = images.download(url, image_id)
+        except Exception as exc:  # noqa: BLE001 - surfaced next to the button
+            report(f"could not download {url}")
+            return (
+                render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error"),
+                gr.update(visible=False),
+                gr.update(interactive=True),
+            )
+
+        status, preview, button = _image_state(prompt_images, position)
+        if not result.ok:
+            status = render.notice(render.escape(result.message), kind="error") + status
+        return status, preview, button
+
+    download_image.click(
+        fn=fetch_current_image,
+        inputs=[prompt_selector, images_state],
+        outputs=[image_status, image_preview, download_image],
+    )
+
+    def fetch_all_images(index, prompt_images, name):
+        pairs = [(url, image_id) for url, image_id in (prompt_images or []) if url]
+        if not pairs:
+            return render.notice("There are no image URLs to download.", kind="empty"), gr.update(), gr.update()
+
+        try:
+            job = jobs.submit_image_downloads(pairs, label=str(name or ""))
+        except Exception as exc:  # noqa: BLE001
+            report("could not queue the image downloads")
+            return render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error"), gr.update(), gr.update()
+
+        message = render.notice(
+            f"Queued job #{job.id} for {len(pairs)} image(s). "
+            "Progress is on the <b>Extended LoRA Details</b> tab; reopen this dialog to see them.",
+            kind="ok",
+        )
+        return message, gr.update(), gr.update()
+
+    download_all_images.click(
+        fn=fetch_all_images,
+        inputs=[prompt_selector, images_state, editor.edit_name_input],
+        outputs=[image_status, image_preview, download_image],
         show_progress=False,
     )
 

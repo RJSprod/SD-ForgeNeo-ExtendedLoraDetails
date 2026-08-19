@@ -5,3 +5,7 @@ __pycache__/
 # The library holds the user's own CSVs; keep the directory, not its contents.
 library/*
 !library/.gitkeep
+
+# Downloaded gallery images.
+images/*
+!images/.gitkeep

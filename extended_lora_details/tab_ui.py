@@ -12,7 +12,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from . import jobs, render
+from . import images, jobs, render
 from .common import lora_directories, opt, report
 from .library import get_library
 
@@ -56,6 +56,14 @@ def _folder_choices() -> list[str]:
         except OSError:
             continue
     return choices
+
+
+def _image_status() -> str:
+    try:
+        return render.image_library_html(images.stats())
+    except Exception:
+        report("could not read the image folder")
+        return render.notice("The image folder could not be read — see the console for details.", kind="error")
 
 
 def _jobs_html() -> str:
@@ -104,6 +112,22 @@ def create_tab():
                             )
                             remove_button = gr.Button("Remove", size="sm")
 
+            # -------------------------------------------------------- images
+            with gr.TabItem("Images"):
+                gr.HTML(
+                    render.notice(
+                        "Gallery images downloaded from the <b>Prompts</b> tab of a LoRA's details dialog "
+                        "all land in one folder, so they can be managed in one place.",
+                        kind="info",
+                    )
+                )
+                image_status = gr.HTML(value=_image_status)
+                with gr.Row():
+                    refresh_images = gr.Button("Refresh")
+                    purge_images = gr.Button("Delete every downloaded image", variant="stop")
+                purge_confirm = gr.Checkbox(label="Yes, delete them", value=False)
+                image_message = gr.HTML()
+
             # ---------------------------------------------------- civitai
             with gr.TabItem("Fetch from Civitai"):
                 gr.HTML(
@@ -133,15 +157,20 @@ def create_tab():
                     recursive = gr.Checkbox(label="Include subfolders", value=True, scale=1)
                 with gr.Row():
                     incremental = gr.Checkbox(
-                        label="Only fetch what the library does not already have",
+                        label="Only fetch LoRAs the library does not already have",
                         value=True,
-                        info="uncheck to re-fetch every file in the folder",
+                        info="anything already recorded is skipped, including ones Civitai had nothing for",
                     )
                     keep_existing = gr.Checkbox(
                         label="Keep rows already in the target CSV",
                         value=True,
                         info="uncheck to rewrite the CSV from scratch",
                     )
+                retry_unresolved = gr.Checkbox(
+                    label="Also retry LoRAs Civitai could not resolve last time",
+                    value=bool(opt("eld_retry_unresolved", False)),
+                    info="use this after uploading models to Civitai, or when a previous run hit errors",
+                )
 
                 # Seeded from Settings → Extended LoRA Details; overridable per run.
                 with gr.Accordion("Fetch options", open=False):
@@ -228,6 +257,28 @@ def create_tab():
             outputs=[upload_status, library_status, sources_table, source_picker, upload],
         )
 
+        def do_refresh_images():
+            return _image_status(), ""
+
+        refresh_images.click(fn=do_refresh_images, outputs=[image_status, image_message], show_progress=False)
+
+        def do_purge_images(confirmed):
+            if not confirmed:
+                return _image_status(), render.notice("Tick the confirmation box first.", kind="info"), gr.update()
+            try:
+                _removed, message = images.purge()
+                note = render.notice(render.escape(message), kind="ok")
+            except Exception as exc:  # noqa: BLE001
+                report("could not delete the downloaded images")
+                note = render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error")
+            return _image_status(), note, gr.update(value=False)
+
+        purge_images.click(
+            fn=do_purge_images,
+            inputs=[purge_confirm],
+            outputs=[image_status, image_message, purge_confirm],
+        )
+
         def do_reload():
             try:
                 get_library().reload()
@@ -279,6 +330,7 @@ def create_tab():
             output_value,
             recursive_value,
             incremental_value,
+            retry_value,
             keep_existing_value,
             base_model_value,
             require_label_value,
@@ -311,6 +363,7 @@ def create_tab():
                     base_model_filter=(base_model_value or "").strip(),
                     require_explicit_label=bool(require_label_value),
                     incremental=bool(incremental_value),
+                    retry_unresolved=bool(retry_value),
                     keep_existing_rows=bool(keep_existing_value),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -330,6 +383,7 @@ def create_tab():
             output_name,
             recursive,
             incremental,
+            retry_unresolved,
             keep_existing,
             base_model_filter,
             require_label,

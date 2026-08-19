@@ -274,6 +274,7 @@ def submit_scan(
     base_model_filter: str = "",
     require_explicit_label: bool = False,
     incremental: bool = True,
+    retry_unresolved: bool = False,
     keep_existing_rows: bool = True,
 ) -> Job:
     """Queue a Civitai fetch for one folder, writing into the library."""
@@ -296,9 +297,10 @@ def submit_scan(
         job.log_line(f"Scanning {folder_path}")
         job.log_line(f"Writing to {output_path}")
 
-        skip_hashes = library.known_sha256() if incremental else set()
+        skip_hashes = library.known_sha256(resolved_only=retry_unresolved) if incremental else set()
         if incremental:
-            job.log_line(f"Incremental mode: {len(skip_hashes)} hash(es) already in the library will be skipped")
+            detail = "resolved LoRAs only" if retry_unresolved else "every LoRA already recorded, resolved or not"
+            job.log_line(f"Incremental: skipping {len(skip_hashes)} known hash(es) — {detail}")
 
         def progress(current: int, total: int, name: str) -> None:
             job.set_progress(current, total, f"{current}/{total} · {name}")
@@ -335,6 +337,40 @@ def submit_scan(
         return f"{output_path.name}: " + ", ".join(parts)
 
     return MANAGER.submit("scan", f"Civitai fetch · {folder_path.name or folder_path}", target)
+
+
+def submit_image_downloads(entries, *, label: str = "") -> Job:
+    """Queue gallery-image downloads for a list of ``(url, image_id)`` pairs."""
+    from . import images
+
+    pairs = [(str(url), str(image_id or "")) for url, image_id in entries if str(url or "").strip()]
+    title = f"Download images · {label}" if label else "Download images"
+
+    def target(job: Job) -> str:
+        folder = images.image_dir()
+        job.log_line(f"{len(pairs)} image(s) into {folder}")
+
+        saved = skipped = failed = 0
+        for index, (url, image_id) in enumerate(pairs, start=1):
+            if job.cancelled:
+                break
+            job.set_progress(index, len(pairs), f"{index}/{len(pairs)}")
+            result = images.download(url, image_id, directory=folder, cancel=job.cancel_event)
+            if result.skipped:
+                skipped += 1
+            elif result.ok:
+                saved += 1
+                job.log_line(result.message)
+            else:
+                failed += 1
+                job.log_line(f"{url[:90]}: {result.message}")
+
+        parts = [f"{saved} downloaded", f"{skipped} already present"]
+        if failed:
+            parts.append(f"{failed} failed")
+        return ", ".join(parts)
+
+    return MANAGER.submit("images", title, target)
 
 
 def submit_prehash(folders=None) -> Job:

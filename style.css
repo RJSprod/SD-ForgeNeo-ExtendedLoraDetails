@@ -5,19 +5,77 @@
  * (light, dark or custom) keeps applying to the panel.
  */
 
+/* The stock dialog is 56em wide, which leaves the extended panel cramped once
+   prompts and an image preview are in it. Widen it only when our panel is
+   present, so the checkpoint and embedding editors are untouched. */
+.edit-user-metadata:has(.eld-panel) {
+    width: min(76em, 94vw);
+}
+
 .eld-panel {
+    margin-top: 1.75em;
+}
+
+.eld-panel > .label-wrap {
+    padding: 0.35em 0;
+    font-size: var(--text-md);
+}
+
+/* Vertical rhythm inside the panel: the request was for room to breathe, with
+   page scroll rather than nested scrollbars. */
+.eld-panel .eld-tabs {
     margin-top: 1em;
 }
 
-.eld-panel .eld-tabs {
-    margin-top: 0.5em;
+.eld-panel .eld-tab {
+    padding-top: 1.25em;
+    display: flex;
+    flex-direction: column;
+    gap: 1.1em;
+}
+
+.eld-panel .eld-tab > * {
+    margin: 0 !important;
+}
+
+/* Touch-friendly action rows: buttons keep a comfortable hit area and wrap
+   onto their own line rather than being squeezed side by side. */
+.eld-panel .eld-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75em;
+    margin: 0;
+}
+
+.eld-panel .eld-actions > button {
+    flex: 1 1 14em;
+    min-height: 2.75em;
+}
+
+.eld-panel .eld-stepper > button {
+    flex: 1 1 8em;
+}
+
+.eld-image-block {
+    padding: 1em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    background: var(--background-fill-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 0.9em;
+}
+
+.eld-image-preview img {
+    max-height: 34em;
+    object-fit: contain;
 }
 
 /* --------------------------------------------------------------- notices */
 
 .eld-notice {
-    padding: 0.6em 0.9em;
-    margin: 0.4em 0;
+    padding: 0.75em 1em;
+    margin: 0.5em 0;
     border-radius: var(--radius-sm);
     border-left: 3px solid var(--border-color-primary);
     background: var(--background-fill-secondary);
@@ -57,15 +115,15 @@
 .eld-chips {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4em;
-    margin: 0.4em 0 0.2em;
+    gap: 0.5em;
+    margin: 0.6em 0 0.2em;
 }
 
 .eld-chip {
     display: inline-flex;
     align-items: baseline;
-    gap: 0.4em;
-    padding: 0.2em 0.6em;
+    gap: 0.5em;
+    padding: 0.35em 0.8em;
     border: 1px solid var(--border-color-primary);
     border-radius: var(--radius-lg);
     background: var(--background-fill-secondary);
@@ -89,7 +147,7 @@
 
 .eld-table th,
 .eld-table td {
-    padding: 0.35em 0.8em;
+    padding: 0.55em 1em;
     text-align: left;
     vertical-align: top;
     border-bottom: 1px solid var(--border-color-primary);
@@ -122,41 +180,38 @@
 }
 
 .eld-source + .eld-source {
-    margin-top: 1.2em;
+    margin-top: 2em;
 }
 
 .eld-source-title {
-    font-size: var(--text-sm);
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--body-text-color);
-    padding-bottom: 0.3em;
+    padding-bottom: 0.5em;
 }
 
 .eld-overview {
-    max-height: 26em;
-    overflow-y: auto;
+    padding-top: 0.25em;
 }
 
 /* --------------------------------------------------------------- prompts */
 
 .eld-count {
     color: var(--body-text-color);
-    font-size: var(--text-sm);
-    padding: 0.2em 0 0.4em;
+    font-size: var(--text-md);
+    padding: 0.2em 0;
 }
 
 .eld-prompt-list {
     list-style: none;
     margin: 0;
     padding: 0;
-    max-height: 28em;
-    overflow-y: auto;
 }
 
 .eld-prompt-list li {
     display: flex;
-    gap: 0.75em;
-    padding: 0.5em 0.2em;
+    gap: 1em;
+    padding: 0.8em 0.3em;
     border-bottom: 1px solid var(--border-color-primary);
     font-size: var(--text-sm);
     color: var(--body-text-color);
@@ -262,4 +317,20 @@
 .eld-library-status,
 .eld-upload-status {
     font-size: var(--text-sm);
+}
+
+/* Narrow windows and touch: one action per line, nothing squeezed. */
+@media (max-width: 700px) {
+    .edit-user-metadata:has(.eld-panel) {
+        width: 96vw;
+        padding: 1em !important;
+    }
+
+    .eld-panel .eld-actions > button {
+        flex: 1 1 100%;
+    }
+
+    .eld-table th {
+        white-space: normal;
+    }
 }

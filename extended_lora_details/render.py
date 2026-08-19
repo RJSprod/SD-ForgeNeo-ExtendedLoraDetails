@@ -8,6 +8,7 @@ applying; there are no hard-coded colours.
 from __future__ import annotations
 
 import html
+from urllib.parse import urlparse
 
 from .common import truncate
 
@@ -109,6 +110,16 @@ def prompt_meta_html(total: int, index: int, sources: list[str]) -> str:
     return f'<div class="eld-count">Prompt <b>{index + 1}</b> of <b>{total}</b>{origin}</div>'
 
 
+def image_status_html(*, downloaded: bool, name: str, url: str) -> str:
+    """The line above the download button, in the Prompts tab."""
+    source = urlparse(url).netloc if url else ""
+    origin = f' <span class="eld-muted">from {escape(source)}</span>' if source else ""
+
+    if downloaded:
+        return notice(f"Image saved as <code>{escape(name)}</code>.{origin}", kind="ok")
+    return notice(f"This prompt's gallery image has not been downloaded yet.{origin}", kind="info")
+
+
 def prompt_list_html(prompts: list[str], *, limit: int = 50) -> str:
     if not prompts:
         return ""
@@ -139,6 +150,25 @@ def library_summary_html(stats: dict) -> str:
         table += notice("The library is empty. Upload a CSV, or run a Civitai fetch on a folder.", kind="empty")
     for source in errors:
         table += notice(f"<b>{escape(source.name)}</b>: {escape(source.error)}", kind="error")
+    return table
+
+
+def image_library_html(stats: dict) -> str:
+    from .common import human_bytes
+
+    rows = [
+        ("Image folder", stats.get("directory", "")),
+        ("Downloaded images", str(stats.get("files", 0))),
+        ("Total size", human_bytes(stats.get("bytes", 0))),
+    ]
+    body = "".join(f"<tr><th>{escape(label)}</th><td>{escape(value)}</td></tr>" for label, value in rows)
+    table = f'<table class="eld-table">{body}</table>'
+    if not stats.get("files"):
+        table += notice(
+            "Nothing downloaded yet. Open a LoRA's details dialog, go to <b>Prompts</b>, and use "
+            "<b>Download this image</b>.",
+            kind="empty",
+        )
     return table
 
 

@@ -72,6 +72,15 @@ NEUTRAL_BASE_LABELS = {
     "unspecified",
 }
 
+@dataclass(frozen=True)
+class PromptImage:
+    """A gallery prompt together with the image it was taken from."""
+
+    prompt: str
+    image_url: str = ""
+    image_id: str = ""
+
+
 BASE_COLUMNS = [
     "safetensor_file",
     "sha256",
@@ -311,6 +320,22 @@ def image_identity(image: dict[str, Any]) -> str:
         return f"object:{id(image)}"
 
 
+def image_url(image: dict[str, Any]) -> str:
+    """The image's own URL, if the record exposes a usable http(s) one."""
+    url = clean_cell(image.get("url"))
+    if url.startswith(("http://", "https://")):
+        return url
+    return ""
+
+
+def image_key(image: dict[str, Any]) -> str:
+    """A stable id for the image, used to name its file on disk."""
+    raw = image.get("id")
+    if raw is not None and str(raw).strip():
+        return str(raw).strip()
+    return ""
+
+
 def image_sort_key(image: dict[str, Any]) -> tuple[str, int, str]:
     created = clean_cell(image.get("createdAt"))
     try:
@@ -356,7 +381,7 @@ class CivitaiClient:
         self.session.mount("http://", adapter)
 
         self.model_cache: dict[int, dict[str, Any]] = {}
-        self.gallery_cache: dict[int, tuple[str, ...]] = {}
+        self.gallery_cache: dict[int, tuple[PromptImage, ...]] = {}
 
     def close(self) -> None:
         try:
@@ -437,7 +462,7 @@ class CivitaiClient:
         merged.update({key: value for key, value in nested.items() if value is not None})
         return merged
 
-    def gallery_prompts(self, version_id: int, *, embedded_images: Any, max_images: int) -> tuple[tuple[str, ...], str | None]:
+    def gallery_prompts(self, version_id: int, *, embedded_images: Any, max_images: int) -> tuple[tuple[PromptImage, ...], str | None]:
         cached = self.gallery_cache.get(version_id)
         if cached is not None and max_images == 0:
             return cached, None
@@ -537,10 +562,16 @@ class CivitaiClient:
         if max_images > 0:
             ordered = ordered[:max_images]
 
-        prompts = tuple(prompt for prompt in (extract_positive_prompt(image) for image in ordered) if prompt)
+        entries: list[PromptImage] = []
+        for image in ordered:
+            prompt = extract_positive_prompt(image)
+            if prompt:
+                entries.append(PromptImage(prompt, image_url(image), image_key(image)))
+
+        result = tuple(entries)
         if max_images == 0 and warning is None:
-            self.gallery_cache[version_id] = prompts
-        return prompts, warning
+            self.gallery_cache[version_id] = result
+        return result, warning
 
 
 # ---------------------------------------------------------------- resolution
@@ -551,7 +582,7 @@ class Resolution:
     status: str
     model_name: str = ""
     trigger_words: tuple[str, ...] = ()
-    prompts: tuple[str, ...] = ()
+    prompts: tuple[PromptImage, ...] = ()
     model_id: int | None = None
     version_id: int | None = None
     version_name: str = ""
@@ -691,12 +722,18 @@ def read_existing_rows(path: Path) -> dict[str, dict[str, str]]:
     return rows
 
 
+# Per-prompt columns, emitted adjacent to each other so the CSV stays readable:
+# positive_prompt_1, prompt_image_url_1, prompt_image_id_1, positive_prompt_2, ...
+PROMPT_COLUMN_PREFIXES = ("positive_prompt_", "prompt_image_url_", "prompt_image_id_")
+PROMPT_COLUMN_RE = re.compile(r"^(?:positive_prompt|prompt_image_url|prompt_image_id)_(\d+)$")
+
+
 def write_csv(output_path: Path, rows: list[dict[str, str]]) -> None:
     """Atomically write the CSV: the destination is replaced only on success."""
     prompt_count = 0
     for row in rows:
         for key in row:
-            match = re.match(r"^positive_prompt_(\d+)$", key)
+            match = PROMPT_COLUMN_RE.match(key)
             if match:
                 prompt_count = max(prompt_count, int(match.group(1)))
     prompt_count = max(1, prompt_count)
@@ -704,12 +741,13 @@ def write_csv(output_path: Path, rows: list[dict[str, str]]) -> None:
     extra_columns: list[str] = []
     for row in rows:
         for key in row:
-            if key in BASE_COLUMNS or re.match(r"^positive_prompt_\d+$", key):
+            if key in BASE_COLUMNS or PROMPT_COLUMN_RE.match(key):
                 continue
             if key not in extra_columns:
                 extra_columns.append(key)
 
-    headers = [*BASE_COLUMNS, *extra_columns, *(f"positive_prompt_{index}" for index in range(1, prompt_count + 1))]
+    prompt_columns = [f"{prefix}{index}" for index in range(1, prompt_count + 1) for prefix in PROMPT_COLUMN_PREFIXES]
+    headers = [*BASE_COLUMNS, *extra_columns, *prompt_columns]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -756,8 +794,12 @@ def row_for(relative_name: str, sha256: str, addnet: str, resolution: Resolution
         "status": resolution.status,
         "note": resolution.reason,
     }
-    for index, prompt in enumerate(resolution.prompts, start=1):
-        row[f"positive_prompt_{index}"] = prompt
+    for index, entry in enumerate(resolution.prompts, start=1):
+        row[f"positive_prompt_{index}"] = entry.prompt
+        if entry.image_url:
+            row[f"prompt_image_url_{index}"] = entry.image_url
+        if entry.image_id:
+            row[f"prompt_image_id_{index}"] = entry.image_id
     return row
 
 

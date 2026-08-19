@@ -52,9 +52,22 @@ NEGATIVE_COLUMNS = ("negative_prompt", "negative_text", "negative_prompts")
 URL_COLUMNS = ("civitai_url", "url", "model_url", "link")
 
 PROMPT_COLUMN_RE = re.compile(r"^(?:positive_)?prompt(?:_?(\d+))?$")
+# Written beside each prompt by the bundled fetcher; `image_url_N` is accepted
+# too so a hand-made CSV can supply images without matching our exact naming.
+PROMPT_IMAGE_URL_RE = re.compile(r"^(?:prompt_)?image_url_?(\d+)$")
+PROMPT_IMAGE_ID_RE = re.compile(r"^(?:prompt_)?image_id_?(\d+)$")
 
 # Separators used inside a single "trigger words" cell.
 TRIGGER_SPLIT_RE = re.compile(r"\s*[,;\n]\s*")
+
+
+@dataclass(frozen=True)
+class PromptEntry:
+    """A prompt from the library, with the gallery image it came from."""
+
+    text: str
+    image_url: str = ""
+    image_id: str = ""
 
 
 @dataclass
@@ -70,7 +83,7 @@ class LibraryRecord:
     model_name: str = ""
     url: str = ""
     trigger_words: tuple[str, ...] = ()
-    prompts: tuple[str, ...] = ()
+    entries: tuple[PromptEntry, ...] = ()
     negative_prompts: tuple[str, ...] = ()
     extras: dict[str, str] = field(default_factory=dict)
     raw: dict[str, str] = field(default_factory=dict)
@@ -79,16 +92,14 @@ class LibraryRecord:
     def title(self) -> str:
         return self.model_name or self.stem or self.rel_path or "(unnamed)"
 
+    @property
+    def prompts(self) -> tuple[str, ...]:
+        return tuple(entry.text for entry in self.entries)
+
 
 def _split_triggers(value: str) -> list[str]:
     return [part for part in (piece.strip() for piece in TRIGGER_SPLIT_RE.split(value)) if part]
 
-
-def _prompt_sort_key(column: str) -> tuple[int, str]:
-    match = PROMPT_COLUMN_RE.match(column)
-    if match and match.group(1):
-        return (int(match.group(1)), column)
-    return (0, column)
 
 
 def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRecord | None:
@@ -152,13 +163,43 @@ def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRe
             if word not in triggers:
                 triggers.append(word)
 
-    prompt_columns = sorted((column for column in normalized if PROMPT_COLUMN_RE.match(column)), key=_prompt_sort_key)
-    prompts: list[str] = []
-    for column in prompt_columns:
-        consumed.add(column)
-        value = normalized[column]
-        if value:
-            prompts.append(value)
+    # Prompts and their images are paired by the trailing index, so an empty
+    # prompt cell cannot shift the images onto the wrong rows.
+    prompt_by_index: dict[int, str] = {}
+    urls_by_index: dict[int, str] = {}
+    ids_by_index: dict[int, str] = {}
+    unnumbered: list[str] = []
+
+    for column, value in normalized.items():
+        match = PROMPT_COLUMN_RE.match(column)
+        if match:
+            consumed.add(column)
+            if not value:
+                continue
+            if match.group(1):
+                prompt_by_index[int(match.group(1))] = value
+            else:
+                unnumbered.append(value)
+            continue
+
+        match = PROMPT_IMAGE_URL_RE.match(column)
+        if match:
+            consumed.add(column)
+            if value:
+                urls_by_index[int(match.group(1))] = value
+            continue
+
+        match = PROMPT_IMAGE_ID_RE.match(column)
+        if match:
+            consumed.add(column)
+            if value:
+                ids_by_index[int(match.group(1))] = value
+
+    entries: list[PromptEntry] = [PromptEntry(text) for text in unnumbered]
+    entries.extend(
+        PromptEntry(prompt_by_index[index], urls_by_index.get(index, ""), ids_by_index.get(index, ""))
+        for index in sorted(prompt_by_index)
+    )
 
     negatives: list[str] = []
     for column in NEGATIVE_COLUMNS:
@@ -185,7 +226,7 @@ def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRe
         model_name=model_name,
         url=url,
         trigger_words=tuple(triggers),
-        prompts=tuple(prompts),
+        entries=tuple(entries),
         negative_prompts=tuple(negatives),
         extras=extras,
         raw=display,
@@ -409,13 +450,15 @@ class Library:
         with self._lock:
             return list(self._records)
 
-    def known_sha256(self, *, resolved_only: bool = True) -> set[str]:
+    def known_sha256(self, *, resolved_only: bool = False) -> set[str]:
         """SHA256s an incremental scan can skip.
 
-        By default only rows that actually carry content count. A row written
-        for a file Civitai could not resolve is a placeholder, not an answer -
-        counting it would mean that file is never looked up again, even after
-        the model appears on Civitai later.
+        Every LoRA the library has already recorded counts, including ones
+        Civitai had nothing for: a refresh is for picking up *new* LoRAs, and
+        re-asking about known misses on every run wastes the whole scan.
+        ``resolved_only`` narrows this to rows that carry actual content, which
+        is what the "retry unresolved" option passes when the operator wants
+        those files looked at again.
         """
         self.ensure_loaded()
         with self._lock:
