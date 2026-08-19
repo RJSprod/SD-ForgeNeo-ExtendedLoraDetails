@@ -13,6 +13,7 @@ import gradio as gr
 
 from . import render
 from .common import default_library_dir, report
+from .images import default_image_dir
 from .library import get_library
 
 SECTION = ("extended_lora_details", "Extended LoRA Details")
@@ -152,6 +153,23 @@ def register() -> None:
             gr.Slider,
             {"minimum": 30, "maximum": 200, "step": 5},
         ),
+        "eld_images_header": OptionHTML("<h3>Gallery images</h3>"),
+        "eld_image_dir": option(
+            str(default_image_dir()),
+            "Folder downloaded gallery images are saved to",
+        ).info("one flat folder, so the whole collection is managed in one place"),
+        "eld_image_max_mb": OptionInfo(
+            32,
+            "Largest image to download (MB)",
+            gr.Slider,
+            {"minimum": 1, "maximum": 256, "step": 1},
+        ),
+        "eld_image_timeout": OptionInfo(
+            30.0,
+            "Image download timeout (seconds)",
+            gr.Slider,
+            {"minimum": 5.0, "maximum": 180.0, "step": 5.0},
+        ),
         "eld_civitai_header": OptionHTML("<h3>Civitai fetch</h3>"),
         "eld_civitai_api_key": option("", "Civitai API key").info(
             "optional, but improves coverage; falls back to the CIVITAI_API_KEY environment variable"
@@ -181,6 +199,10 @@ def register() -> None:
             False,
             "Require an explicit base-model label (rejects unlabeled exact hash matches)",
         ),
+        "eld_retry_unresolved": option(
+            False,
+            "On a refresh, look up LoRAs Civitai had nothing for last time",
+        ).info("off by default: a refresh is for picking up new LoRAs, not re-asking about known misses"),
     }
 
     for key, info in options_section(SECTION, options).items():

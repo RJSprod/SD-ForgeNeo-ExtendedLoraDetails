@@ -23,10 +23,14 @@ are untouched, and a collapsible **Extended details** panel is added below them.
   tab runs a fetch over any folder you pick. It hashes each file, resolves it
   through Civitai's `by-hash` endpoint, and writes a CSV into the library —
   on a worker thread, so generation keeps working.
-* **Refresh for new content.** A fetch defaults to *incremental*: files whose
-  hash is already *resolved* in the library are skipped, so re-running it on a
-  folder only costs requests for what is new. Files Civitai could not resolve
-  last time are retried, since a model may have appeared since.
+* **Refresh for new content only.** A fetch defaults to *incremental*: any LoRA
+  the library has already recorded is skipped — including ones Civitai had
+  nothing for — so re-running it on a folder only costs requests for LoRAs you
+  actually added. A separate opt-in retries the unresolved ones when you want
+  them looked at again.
+* **Download the gallery image behind a prompt.** Each prompt keeps the image it
+  came from; a button beside the prompt saves it into one flat folder. Delete a
+  file and it is simply offered again.
 * **Standard Gradio components throughout**, styled only with Gradio's own theme
   variables, so your theme keeps applying.
 
@@ -62,7 +66,14 @@ fetch**. Progress and a live log are on the *Jobs* tab.
 The library is just a directory of CSVs (`<extension>/library` by default,
 changeable in settings). Every `.csv` under it is indexed, recursively.
 
-### 2. Open a LoRA card's details
+### 2. Refresh later, for new LoRAs only
+
+Re-run the fetch on the same folder. Everything the library already knows about
+is skipped, so only LoRAs you have added since are looked up. If you want the
+ones Civitai had nothing for to be tried again — say you have since uploaded
+them — tick *Also retry LoRAs Civitai could not resolve last time*.
+
+### 3. Open a LoRA card's details
 
 On the LoRA tab, click a card's ⚙ (*edit metadata*) icon. The **Extended
 details** panel sits below the stock fields:
@@ -71,7 +82,7 @@ details** panel sits below the stock fields:
 | --- | --- |
 | **Overview** | Every field from the matched row(s): model name, Civitai link, base model, trigger words, and any extra columns your CSV carries. |
 | **Trigger words** | Clickable chips — clicking one adds or removes it from the dialog's *Activation text*. Buttons set or append the whole set. |
-| **Prompts** | A searchable selector over every gallery prompt, with ‹ › stepping, a copy button, and *Append to prompt* / *Replace prompt*. An *All prompts* accordion lists them. |
+| **Prompts** | A searchable selector over every gallery prompt, with ‹ › stepping, a copy button, and *Append to prompt* / *Replace prompt*. Below that, the prompt's gallery image: download it, or the whole set for this LoRA, and see it inline once saved. An *All prompts* accordion lists them. |
 | **Raw CSV row** | The matched row(s) as JSON, for when a column is not displayed elsewhere. |
 
 The panel header summarises the match, and the panel opens itself when there is
@@ -91,6 +102,7 @@ case-insensitively and ignoring separators.
 | Model name | `civitai_model_name`, `model_name`, `name`, `title` |
 | Trigger words | `trigger_words`, `trained_words`, `activation_text`, `keywords`, `tags` |
 | Prompts | `positive_prompt_1..N`, `prompt_1..N`, `prompt` |
+| Prompt images | `prompt_image_url_N` / `image_url_N`, `prompt_image_id_N` / `image_id_N` |
 | Negative prompt | `negative_prompt`, `negative_text` |
 | Link | `civitai_url`, `url`, `model_url` |
 
@@ -107,8 +119,14 @@ always writes one.
 ```
 safetensor_file, sha256, addnet_hash, civitai_model_name, civitai_model_id,
 civitai_version_id, civitai_version_name, base_model, civitai_url,
-trigger_words, status, note, positive_prompt_1 … positive_prompt_N
+trigger_words, status, note,
+positive_prompt_1, prompt_image_url_1, prompt_image_id_1,
+positive_prompt_2, prompt_image_url_2, prompt_image_id_2, …
 ```
+
+Each prompt sits next to the gallery image it came from. The three columns are
+paired by their trailing number, so an empty prompt cell can never shift an
+image onto the wrong prompt.
 
 <!-- ------------------------------------------------------------------ -->
 
@@ -160,15 +178,26 @@ walk defensively. The CSV is written atomically.
 | Open it automatically when there is a match | on | |
 | Prompts rendered in the "All prompts" list | 50 | the selector always reaches every prompt |
 | Characters of each prompt in the selector | 90 | |
+| Folder for downloaded images | `<extension>/images` | one flat folder |
+| Largest image to download | 32 MB | |
+| Image download timeout | 30 s | |
 | Civitai API key | — | falls back to `CIVITAI_API_KEY` |
 | Delay between requests / timeout / images per version | 0.15 s / 30 s / all | |
 | Only accept this base model | — | e.g. `Krea 2` |
 | Require an explicit base-model label | off | |
+| Retry unresolved LoRAs on a refresh | off | seeds the checkbox on the fetch tab |
 
 <!-- ------------------------------------------------------------------ -->
 
 ## Notes
 
+* **Gallery images need a CSV that has their URLs.** A CSV written before this
+  feature existed, or by another tool, has prompts but no image URLs — those
+  prompts simply show "no image URL in the library". Re-run a fetch (with
+  *retry unresolved* on, or the incremental box off) to pick them up.
+* **Whether an image is downloaded is answered from disk**, never from a
+  manifest, so moving or deleting files out from under the extension is safe:
+  anything missing is offered for download again as if it were new.
 * **First open of a large LoRA takes a moment** while its SHA256 is computed.
   The digest is cached in `.cache/hashes.json` (keyed by size and mtime), so it
   only happens once. Run **Precompute hashes** on the extension tab to get it
