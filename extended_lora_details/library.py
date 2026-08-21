@@ -9,6 +9,7 @@ Identity             ``sha256`` / ``hash`` / ``model_hash`` / ``addnet_hash``,
                      and ``safetensor_file`` / ``filename`` / ``path``
 Displayed as fields  ``civitai_model_name``, ``trigger_words``, ``notes``, ...
 Displayed as prompts ``positive_prompt_1..N`` / ``prompt_1..N`` / ``prompt``
+Displayed as text    ``model_description`` / ``description``, ``version_description``
 ===================  ==========================================================
 
 Anything that is not recognised is still shown, under "Other fields", so no
@@ -49,6 +50,8 @@ PATH_COLUMNS = ("safetensor_file", "safetensors_file", "file", "filename", "file
 NAME_COLUMNS = ("civitai_model_name", "model_name", "name", "title", "lora_name")
 TRIGGER_COLUMNS = ("trigger_words", "trained_words", "trainedwords", "activation_text", "activation_words", "keywords", "triggers", "tags")
 NEGATIVE_COLUMNS = ("negative_prompt", "negative_text", "negative_prompts")
+DESCRIPTION_COLUMNS = ("model_description", "civitai_model_description", "description", "about_this_model", "model_about")
+VERSION_DESCRIPTION_COLUMNS = ("version_description", "civitai_version_description", "about_this_version", "version_notes")
 URL_COLUMNS = ("civitai_url", "url", "model_url", "link")
 
 PROMPT_COLUMN_RE = re.compile(r"^(?:positive_)?prompt(?:_?(\d+))?$")
@@ -82,6 +85,8 @@ class LibraryRecord:
     stem: str = ""
     model_name: str = ""
     url: str = ""
+    description: str = ""
+    version_description: str = ""
     trigger_words: tuple[str, ...] = ()
     entries: tuple[PromptEntry, ...] = ()
     negative_prompts: tuple[str, ...] = ()
@@ -95,6 +100,10 @@ class LibraryRecord:
     @property
     def prompts(self) -> tuple[str, ...]:
         return tuple(entry.text for entry in self.entries)
+
+    @property
+    def has_description(self) -> bool:
+        return bool(self.description or self.version_description)
 
 
 def _split_triggers(value: str) -> list[str]:
@@ -153,6 +162,8 @@ def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRe
     raw_path = take(PATH_COLUMNS)
     model_name = take(NAME_COLUMNS)
     url = take(URL_COLUMNS)
+    description = take(DESCRIPTION_COLUMNS)
+    version_description = take(VERSION_DESCRIPTION_COLUMNS)
 
     triggers: list[str] = []
     for column in TRIGGER_COLUMNS:
@@ -225,6 +236,8 @@ def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRe
         stem=path_stem(raw_path) or normalize_key(model_name),
         model_name=model_name,
         url=url,
+        description=description,
+        version_description=version_description,
         trigger_words=tuple(triggers),
         entries=tuple(entries),
         negative_prompts=tuple(negatives),
@@ -450,15 +463,25 @@ class Library:
         with self._lock:
             return list(self._records)
 
-    def known_sha256(self, *, resolved_only: bool = False) -> set[str]:
+    def known_sha256(self, *, resolved_only: bool = False, require_description: bool = False) -> set[str]:
         """SHA256s an incremental scan can skip.
 
         Every LoRA the library has already recorded counts, including ones
         Civitai had nothing for: a refresh is for picking up *new* LoRAs, and
         re-asking about known misses on every run wastes the whole scan.
-        ``resolved_only`` narrows this to rows that carry actual content, which
-        is what the "retry unresolved" option passes when the operator wants
-        those files looked at again.
+
+        Two options narrow that down:
+
+        ``resolved_only``
+            drops rows that carry no content at all, so the LoRAs Civitai could
+            not resolve are looked at again. This is what the "retry unresolved"
+            checkbox passes.
+        ``require_description``
+            drops rows that *did* resolve but hold no description - rows written
+            before descriptions were collected, say - so a refresh fills in the
+            text they are missing. Rows that never resolved are deliberately not
+            affected: whether those are retried stays ``resolved_only``'s call,
+            and no miss should be re-queried on every single run.
         """
         self.ensure_loaded()
         with self._lock:
@@ -468,7 +491,10 @@ class Library:
         for record in records:
             if len(record.sha256) != 64:
                 continue
-            if resolved_only and not (record.model_name or record.trigger_words or record.prompts):
+            resolved = bool(record.model_name or record.trigger_words or record.prompts)
+            if resolved_only and not resolved:
+                continue
+            if require_description and resolved and not record.has_description:
                 continue
             known.add(record.sha256)
         return known
@@ -482,6 +508,7 @@ class Library:
                 "rows": len(self._records),
                 "hashed_rows": sum(1 for record in self._records if record.sha256),
                 "prompts": sum(len(record.prompts) for record in self._records),
+                "described_rows": sum(1 for record in self._records if record.has_description),
                 "errors": [source for source in self._sources if source.error],
             }
 

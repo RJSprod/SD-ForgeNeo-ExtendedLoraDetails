@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from extended_lora_details import civitai, hashing, images, jobs  # noqa: E402
+from extended_lora_details import civitai, descriptions, hashing, images, jobs, render  # noqa: E402
 from extended_lora_details.library import Library, parse_row  # noqa: E402
 
 
@@ -240,11 +240,16 @@ def test_the_negative_prompt_is_never_used_as_a_positive_one():
 
 
 class StubClient:
-    """Stands in for CivitaiClient; records every hash it was asked about."""
+    """Stands in for CivitaiClient; records every hash it was asked about.
+
+    Shaped like the real API: the version response embeds a model record with a
+    name and type but no description, so asking for one costs a model-page fetch.
+    """
 
     def __init__(self, known: set[str], **_kwargs):
         self.known = known
         self.lookups: list[str] = []
+        self.model_pages: list[int] = []
 
     def close(self):
         pass
@@ -258,13 +263,17 @@ class StubClient:
             "modelId": 2,
             "name": "v1",
             "baseModel": "SDXL",
+            "description": "<p>Version <b>notes</b>.</p>",
             "trainedWords": ["trig"],
             "files": [{"name": "f", "hashes": {"SHA256": sha256}}],
             "model": {"name": "Stub Model", "type": "LORA"},
         }
 
-    def model_info(self, version):
-        return version["model"]
+    def model_info(self, version, *, with_description=False):
+        if not with_description:
+            return version["model"]
+        self.model_pages.append(version["modelId"])
+        return {**version["model"], "description": "<p>About <b>this</b> model.</p>"}
 
     def gallery_prompts(self, _version_id, *, embedded_images, max_images):
         return (civitai.PromptImage("a prompt", "https://image.example/1.jpeg", "1"),), None
@@ -375,6 +384,165 @@ def test_the_csv_is_replaced_only_after_a_complete_write():
             raise AssertionError("the write should have failed")
         assert output.read_text(encoding="utf-8") == before
         assert not list(Path(tmp).glob("*.tmp")), "the temp file must be cleaned up"
+
+
+# --------------------------------------------------------------- descriptions
+
+
+def test_html_descriptions_become_readable_text():
+    text = descriptions.html_to_text(
+        "<h2>My LoRA</h2><p>Trained on <b>500</b> images.<br>Use <code>trigger</code>.</p>"
+        "<ul><li>one</li><li>two <a href=\"/models/5\">the page</a></li></ul>"
+        "<script>steal()</script><img src=\"https://img.example/x.png\">"
+    )
+    assert text == (
+        "My LoRA\n\n"
+        "Trained on 500 images.\n"
+        "Use trigger.\n\n"
+        "• one\n"
+        "• two the page (https://civitai.com/models/5)"
+    ), text
+    assert "<" not in text, "no markup may survive the conversion"
+
+
+def test_description_conversion_keeps_lists_and_drops_nothing_else():
+    assert descriptions.html_to_text("<ol><li>first</li><li>second<ul><li>nested</li></ul></li><li>third</li></ol>") == (
+        "1. first\n2. second\n  • nested\n3. third"
+    )
+    # plain text passes through with its paragraphs and entities intact
+    assert descriptions.html_to_text("Plain.\n\nSecond &amp; last.") == "Plain.\n\nSecond & last."
+    assert descriptions.html_to_text(None) == "" and descriptions.html_to_text("   ") == ""
+    # a link whose text is already the URL is not spelled out twice
+    assert descriptions.html_to_text('<a href="https://x.example/y">https://x.example/y</a>') == "https://x.example/y"
+
+
+def test_a_long_description_is_capped_visibly():
+    capped = descriptions.html_to_text("<p>" + "word " * 5000 + "</p>", limit=100)
+    assert len(capped) == 100 and capped.endswith("…")
+
+
+def test_rendered_descriptions_escape_text_and_link_urls():
+    html = render.rich_text("A <script>alert(1)</script> line\nsecond\n\nSee https://civitai.com/models/7?a=1&b=2.")
+    assert "<script>" not in html and "&lt;script&gt;" in html
+    assert html.count("<p>") == 2 and "<br>" in html
+    assert '<a href="https://civitai.com/models/7?a=1&amp;b=2"' in html
+    assert html.endswith(".</p>"), "sentence punctuation stays outside the link"
+
+
+def test_description_columns_are_read_and_not_repeated_as_extras():
+    record = parse_row(
+        {
+            "sha256": "cd" * 32,
+            "model_description": "About the model",
+            "version_description": "About the version",
+            "Notes": "kept",
+        },
+        source="x.csv",
+        row_number=2,
+    )
+    assert record.description == "About the model"
+    assert record.version_description == "About the version"
+    assert record.has_description
+    assert record.extras == {"Notes": "kept"}
+
+    # an unrelated tool's column naming works just as well
+    aliased = parse_row({"sha256": "ef" * 32, "Description": "text"}, source="y.csv", row_number=2)
+    assert aliased.description == "text" and aliased.extras == {}
+
+    assert not parse_row({"sha256": "ab" * 32, "civitai_model_name": "x"}, source="z.csv", row_number=2).has_description
+
+
+def test_a_fetch_stores_the_description_and_backfills_rows_that_lack_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        hashing.CACHE = hashing.HashCache(root / "hashes.json")
+        loras = root / "loras"
+        sha_a = make_safetensors(loras / "alpha.safetensors", b"A")
+        sha_b = make_safetensors(loras / "beta.safetensors", b"B")   # Civitai knows nothing about it
+        output = root / "out.csv"
+
+        original, created = _stub_scan(civitai, {sha_a})
+        try:
+            civitai.scan_folder(loras, output, log=lambda _m: None)
+            # a fresh stub client is built per scan, so each assertion below
+            # reads the one that scan used
+            assert created["client"].model_pages == [2], "the description costs one model-page fetch"
+
+            row = next(r for r in csv.DictReader(output.open(encoding="utf-8")) if r["sha256"] == sha_a)
+            assert row["model_description"] == "About this model."
+            assert row["version_description"] == "Version notes."
+
+            library = Library(root)
+            library.reload()
+            records, _how = library.lookup(sha256=sha_a)
+            assert records[0].description == "About this model."
+
+            # a refresh has nothing to fill in, so it costs no requests at all
+            civitai.scan_folder(
+                loras,
+                output,
+                skip_hashes=library.known_sha256(require_description=True),
+                log=lambda _m: None,
+            )
+            assert created["client"].lookups == [], "nothing is missing, so nothing is re-queried"
+
+            # a row written before descriptions existed is looked up again...
+            stripped = list(csv.DictReader(output.open(encoding="utf-8")))
+            for entry in stripped:
+                entry["model_description"] = entry["version_description"] = ""
+            civitai.write_csv(output, stripped)
+            library.reload()
+            assert library.known_sha256() == {sha_a, sha_b}, "plain refresh still skips everything recorded"
+
+            civitai.scan_folder(
+                loras,
+                output,
+                skip_hashes=library.known_sha256(require_description=True),
+                log=lambda _m: None,
+            )
+            assert created["client"].lookups == [sha_a], "only the resolved row missing its text is re-fetched"
+
+            # ...and the description comes back
+            row = next(r for r in csv.DictReader(output.open(encoding="utf-8")) if r["sha256"] == sha_a)
+            assert row["model_description"] == "About this model."
+        finally:
+            civitai.CivitaiClient = original
+
+
+def test_turning_descriptions_off_costs_no_extra_request():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        hashing.CACHE = hashing.HashCache(root / "hashes.json")
+        loras = root / "loras"
+        sha_a = make_safetensors(loras / "alpha.safetensors", b"A")
+        output = root / "out.csv"
+
+        original, created = _stub_scan(civitai, {sha_a})
+        try:
+            civitai.scan_folder(loras, output, fetch_descriptions=False, log=lambda _m: None)
+            assert created["client"].model_pages == []
+            row = next(iter(csv.DictReader(output.open(encoding="utf-8"))))
+            assert row["model_description"] == "" and row["civitai_model_name"] == "Stub Model"
+        finally:
+            civitai.CivitaiClient = original
+
+
+def test_a_refetch_keeps_hand_written_columns_but_not_stale_prompts():
+    fresh = {"safetensor_file": "a.safetensors", "sha256": "ab" * 32, "positive_prompt_1": "new"}
+    existing = {
+        "safetensor_file": "a.safetensors",
+        "sha256": "ab" * 32,
+        "civitai_model_name": "Old Name",
+        "positive_prompt_1": "old",
+        "positive_prompt_2": "dropped with the version it came from",
+        "My Rating": "5 stars",
+    }
+    merged = civitai.merge_row(existing, fresh)
+    assert merged["My Rating"] == "5 stars", "a column this tool does not own survives"
+    assert merged["positive_prompt_1"] == "new"
+    assert "positive_prompt_2" not in merged
+    assert merged.get("civitai_model_name", "") == ""
+    assert civitai.merge_row(None, fresh) == fresh
 
 
 # ---------------------------------------------------------------------- images

@@ -116,8 +116,11 @@ def gather(page, name: str) -> dict:
     prompt_images: list[tuple[str, str]] = []
     prompt_sources: list[str] = []
     triggers: list[tuple[str, str]] = []
+    descriptions: list[tuple[str, str, str, str]] = []
     seen_triggers: set[str] = set()
     for record in records:
+        if record.has_description:
+            descriptions.append((record.title, record.source, record.description, record.version_description))
         for entry in record.entries:
             if entry.text and entry.text not in prompts:
                 prompts.append(entry.text)
@@ -136,6 +139,7 @@ def gather(page, name: str) -> dict:
     return {
         "records": records,
         "how": how,
+        "descriptions": descriptions,
         "prompts": prompts,
         "prompt_images": prompt_images,
         "prompt_sources": prompt_sources,
@@ -232,6 +236,9 @@ def build_panel(editor) -> None:
             with gr.TabItem("Overview", elem_classes=["eld-tab"]):
                 overview = gr.HTML(elem_classes=["eld-overview"])
 
+            with gr.TabItem("Description", elem_classes=["eld-tab"]):
+                description = gr.HTML(elem_classes=["eld-description-block"])
+
             with gr.TabItem("Trigger words", elem_classes=["eld-tab"]):
                 trigger_tags = gr.HighlightedText(
                     label="From the library — click a word to add it to the activation text",
@@ -299,6 +306,7 @@ def build_panel(editor) -> None:
             gr.update(label="Extended details", open=open_by_default),
             "",
             "",
+            "",
             gr.update(value=[], visible=False),
             "",
             gr.update(choices=[], value=None),
@@ -332,6 +340,8 @@ def build_panel(editor) -> None:
                 pieces.append(f"{len(triggers)} trigger word{'s' if len(triggers) != 1 else ''}")
             if prompts:
                 pieces.append(f"{len(prompts)} prompt{'s' if len(prompts) != 1 else ''}")
+            if data["descriptions"]:
+                pieces.append("description")
             label = "Extended details — " + ", ".join(pieces)
         else:
             label = "Extended details — no library match"
@@ -352,6 +362,7 @@ def build_panel(editor) -> None:
             gr.update(label=label, open=should_open),
             render.summary_html(matched=bool(records), how=data["how"], records=records, identity=data["identity"]),
             render.overview_html(records),
+            render.description_html(data["descriptions"]),
             gr.update(value=list(triggers), visible=bool(triggers)),
             ", ".join(word for word, _ in triggers),
             gr.update(choices=choices, value=0 if choices else None),
@@ -371,6 +382,7 @@ def build_panel(editor) -> None:
         panel,
         summary,
         overview,
+        description,
         trigger_tags,
         trigger_text,
         prompt_selector,

@@ -17,7 +17,12 @@ Columns
 ``safetensor_file``, ``sha256``, ``addnet_hash``, ``civitai_model_name``,
 ``civitai_model_id``, ``civitai_version_id``, ``civitai_version_name``,
 ``base_model``, ``civitai_url``, ``trigger_words``, ``status``, ``note``,
-``positive_prompt_1..N``.
+``model_description``, ``version_description``, ``positive_prompt_1..N`` with the
+URL and id of the gallery image each prompt came from.
+
+Descriptions are converted from Civitai's HTML to plain text and are collected by
+default; ``--no-descriptions`` turns that off. No image is ever downloaded here -
+only the URL is recorded.
 
 The ``sha256`` column is what lets the extension match a row to a LoRA by hash
 rather than by file name.
@@ -58,6 +63,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=30.0, help="HTTP timeout in seconds")
     parser.add_argument("--request-delay", type=float, default=0.15, help="minimum delay between requests, in seconds")
     parser.add_argument("--max-images", type=int, default=0, help="gallery images inspected per version; 0 means all")
+    parser.add_argument(
+        "--no-descriptions",
+        action="store_true",
+        help="skip the model description (saves one request per model page)",
+    )
     parser.add_argument("--no-recursive", action="store_true", help="do not descend into subfolders")
     parser.add_argument(
         "--base-model",
@@ -95,6 +105,8 @@ def main() -> int:
     print(f"Output: {output}")
     print(f"Policy: {args.base_model or 'any base model'}"
           f"{', explicit label required' if args.require_base_model_label else ''}")
+    print(f"Text:   trigger words, gallery prompts"
+          f"{', model descriptions' if not args.no_descriptions else ''}")
 
     report = civitai.scan_folder(
         root,
@@ -106,6 +118,7 @@ def main() -> int:
         recursive=not args.no_recursive,
         base_model_filter=args.base_model,
         require_explicit_label=args.require_base_model_label,
+        fetch_descriptions=not args.no_descriptions,
         keep_existing_rows=not args.overwrite,
         log=lambda message: print(message, flush=True),
     )

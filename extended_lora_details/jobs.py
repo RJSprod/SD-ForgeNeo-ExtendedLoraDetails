@@ -275,6 +275,8 @@ def submit_scan(
     require_explicit_label: bool = False,
     incremental: bool = True,
     retry_unresolved: bool = False,
+    backfill_text: bool = True,
+    fetch_descriptions: bool = True,
     keep_existing_rows: bool = True,
 ) -> Job:
     """Queue a Civitai fetch for one folder, writing into the library."""
@@ -297,9 +299,18 @@ def submit_scan(
         job.log_line(f"Scanning {folder_path}")
         job.log_line(f"Writing to {output_path}")
 
-        skip_hashes = library.known_sha256(resolved_only=retry_unresolved) if incremental else set()
+        # Backfilling only makes sense for details this run would actually
+        # collect, so it follows the description switch.
+        backfill = backfill_text and fetch_descriptions
+        skip_hashes = (
+            library.known_sha256(resolved_only=retry_unresolved, require_description=backfill)
+            if incremental
+            else set()
+        )
         if incremental:
             detail = "resolved LoRAs only" if retry_unresolved else "every LoRA already recorded, resolved or not"
+            if backfill:
+                detail += ", except rows still missing their text details"
             job.log_line(f"Incremental: skipping {len(skip_hashes)} known hash(es) — {detail}")
 
         def progress(current: int, total: int, name: str) -> None:
@@ -315,6 +326,7 @@ def submit_scan(
             recursive=recursive,
             base_model_filter=base_model_filter,
             require_explicit_label=require_explicit_label,
+            fetch_descriptions=fetch_descriptions,
             skip_hashes=skip_hashes,
             keep_existing_rows=keep_existing_rows,
             cancel=job.cancel_event,

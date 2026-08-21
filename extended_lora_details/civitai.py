@@ -13,6 +13,12 @@ identity rules of the original are kept intact:
 The Krea 2 specific gate is generalised into an optional ``base_model_filter``
 so the extension is useful for any LoRA collection; leaving it empty accepts any
 exact hash match, which is the behaviour of the original script's default mode.
+
+What a scan collects is *text*: model name, base model, trigger words, gallery
+prompts and - fetched by default - the model's description, converted from
+Civitai's HTML by :mod:`.descriptions`. Gallery images are never downloaded here;
+only the URL of the image behind each prompt is recorded, so downloading one
+stays a separate, deliberate request.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ from typing import Any, Callable, Iterable
 from urllib.parse import urljoin, urlparse
 
 from .common import SAFETENSORS_EXTENSIONS, clean_cell, normalize_key
+from .descriptions import html_to_text
 from .hashing import addnet_sha256_file, sha256_file
 
 # Gallery prompts routinely exceed csv's default 128 KiB field limit.
@@ -94,6 +101,10 @@ BASE_COLUMNS = [
     "trigger_words",
     "status",
     "note",
+    # Text details, kept at the end of the fixed columns: they are long, and a
+    # spreadsheet is far easier to read when the identity columns come first.
+    "model_description",
+    "version_description",
 ]
 
 
@@ -441,7 +452,14 @@ class CivitaiClient:
         self.model_cache[model_id] = payload
         return payload
 
-    def model_info(self, version: dict[str, Any]) -> dict[str, Any]:
+    def model_info(self, version: dict[str, Any], *, with_description: bool = False) -> dict[str, Any]:
+        """The parent model record, fetching the model page when needed.
+
+        The version response embeds a small model record that carries the name
+        and type but never the description, so asking for a description means
+        the model page has to be fetched. ``self.model`` caches by model id, so
+        several versions of one model still cost a single request.
+        """
         nested_model = version.get("model")
         nested = dict(nested_model) if isinstance(nested_model, dict) else {}
 
@@ -450,7 +468,10 @@ class CivitaiClient:
         except (TypeError, ValueError):
             return nested
 
-        if clean_cell(nested.get("name")) and clean_cell(nested.get("type")):
+        sufficient = bool(clean_cell(nested.get("name")) and clean_cell(nested.get("type")))
+        if with_description and not clean_cell(nested.get("description")):
+            sufficient = False
+        if sufficient:
             return nested
 
         try:
@@ -459,7 +480,14 @@ class CivitaiClient:
             return nested
 
         merged = dict(parent)
-        merged.update({key: value for key, value in nested.items() if value is not None})
+        for key, value in nested.items():
+            if value is None:
+                continue
+            # A blank field on the embedded record must not blank out the one
+            # the model page actually filled in.
+            if isinstance(value, str) and not value.strip() and clean_cell(merged.get(key)):
+                continue
+            merged[key] = value
         return merged
 
     def gallery_prompts(self, version_id: int, *, embedded_images: Any, max_images: int) -> tuple[tuple[PromptImage, ...], str | None]:
@@ -588,6 +616,8 @@ class Resolution:
     version_name: str = ""
     base_model: str = ""
     url: str = ""
+    model_description: str = ""
+    version_description: str = ""
     reason: str = ""
 
     @property
@@ -609,6 +639,7 @@ def resolve_hash(
     base_model_filter: str = "",
     require_explicit_label: bool = False,
     max_images: int = 0,
+    fetch_descriptions: bool = True,
     allowed_types: Iterable[str] = ("lora", "locon", "loha", "lycoris", "dora"),
 ) -> Resolution:
     """Resolve one SHA256 into the CSV payload for that LoRA."""
@@ -629,7 +660,7 @@ def resolve_hash(
     if not hashes_ok:
         return Resolution("hash_mismatch", version_id=version_id, reason=hash_reason)
 
-    parent_model = client.model_info(version)
+    parent_model = client.model_info(version, with_description=fetch_descriptions)
     model_type_raw = parent_model.get("type")
     model_type = normalize_key(model_type_raw)
     allowed = {normalize_key(item) for item in allowed_types}
@@ -660,6 +691,8 @@ def resolve_hash(
         "version_name": clean_cell(version.get("name")),
         "base_model": base_model,
         "url": url,
+        "model_description": html_to_text(parent_model.get("description")) if fetch_descriptions else "",
+        "version_description": html_to_text(version.get("description")) if fetch_descriptions else "",
     }
 
     if warning:
@@ -793,6 +826,8 @@ def row_for(relative_name: str, sha256: str, addnet: str, resolution: Resolution
         "trigger_words": ", ".join(resolution.trigger_words),
         "status": resolution.status,
         "note": resolution.reason,
+        "model_description": resolution.model_description,
+        "version_description": resolution.version_description,
     }
     for index, entry in enumerate(resolution.prompts, start=1):
         row[f"positive_prompt_{index}"] = entry.prompt
@@ -801,6 +836,25 @@ def row_for(relative_name: str, sha256: str, addnet: str, resolution: Resolution
         if entry.image_id:
             row[f"prompt_image_id_{index}"] = entry.image_id
     return row
+
+
+def merge_row(existing: dict[str, str] | None, fresh: dict[str, str]) -> dict[str, str]:
+    """Overlay a freshly fetched row on the one already in the CSV.
+
+    Columns this tool owns are always taken from the fresh row - a re-fetch that
+    returned fewer prompts must not leave stale ones behind. Columns it does not
+    own (anything a user added by hand) are carried across, so re-running a fetch
+    to pick up missing text details never costs someone their own notes.
+    """
+    if not existing:
+        return fresh
+
+    merged = dict(fresh)
+    for key, value in existing.items():
+        if not value or key in BASE_COLUMNS or PROMPT_COLUMN_RE.match(key):
+            continue
+        merged.setdefault(key, value)
+    return merged
 
 
 def scan_folder(
@@ -814,6 +868,7 @@ def scan_folder(
     recursive: bool = True,
     base_model_filter: str = "",
     require_explicit_label: bool = False,
+    fetch_descriptions: bool = True,
     skip_hashes: set[str] | None = None,
     keep_existing_rows: bool = True,
     cancel: threading.Event | None = None,
@@ -838,6 +893,11 @@ def scan_folder(
     files = find_networks(root, recursive=recursive)
     report.total = len(files)
     emit(f"Found {len(files)} safetensors file(s) under {root}")
+    emit(
+        "Collecting trigger words, gallery prompts and model descriptions (text only)"
+        if fetch_descriptions
+        else "Collecting trigger words and gallery prompts; descriptions are turned off"
+    )
 
     existing = read_existing_rows(output_path) if keep_existing_rows else {}
     if existing:
@@ -890,6 +950,7 @@ def scan_folder(
                         base_model_filter=base_model_filter,
                         require_explicit_label=require_explicit_label,
                         max_images=max_images,
+                        fetch_descriptions=fetch_descriptions,
                     )
                 except Cancelled:
                     report.cancelled = True
@@ -899,7 +960,10 @@ def scan_folder(
 
             report.processed += 1
             report.counts[resolution.status] = report.counts.get(resolution.status, 0) + 1
-            rows_by_file[relative_name] = row_for(relative_name, sha256, addnet, resolution)
+            rows_by_file[relative_name] = merge_row(
+                existing.get(relative_name),
+                row_for(relative_name, sha256, addnet, resolution),
+            )
 
             if resolution.resolved:
                 report.resolved += 1
