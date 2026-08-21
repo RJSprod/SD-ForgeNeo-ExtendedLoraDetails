@@ -134,7 +134,10 @@ def create_tab():
                     render.notice(
                         "Hashes every <code>.safetensors</code> under the chosen folder, resolves each one "
                         "through Civitai's <code>by-hash</code> endpoint, and writes the result into the "
-                        "library as a CSV. Runs in the background — you can keep generating.",
+                        "library as a CSV. Runs in the background — you can keep generating.<br>"
+                        "Text is fetched by default: model name, base model, trigger words, gallery prompts "
+                        "and the model description. Gallery <b>images are never downloaded by a fetch</b> — "
+                        "ask for those from a LoRA's <b>Prompts</b> tab when you want them.",
                         kind="info",
                     )
                 )
@@ -171,6 +174,17 @@ def create_tab():
                     value=bool(opt("eld_retry_unresolved", False)),
                     info="use this after uploading models to Civitai, or when a previous run hit errors",
                 )
+                with gr.Row():
+                    fetch_descriptions = gr.Checkbox(
+                        label="Fetch model descriptions",
+                        value=bool(opt("eld_fetch_descriptions", True)),
+                        info="the description text from the model's Civitai page, shown on the panel's Description tab",
+                    )
+                    backfill_text = gr.Checkbox(
+                        label="Fill in text details missing from rows already in the library",
+                        value=bool(opt("eld_backfill_text", True)),
+                        info="looks up LoRAs that resolved before but carry no description yet",
+                    )
 
                 # Seeded from Settings → Extended LoRA Details; overridable per run.
                 with gr.Accordion("Fetch options", open=False):
@@ -331,6 +345,8 @@ def create_tab():
             recursive_value,
             incremental_value,
             retry_value,
+            backfill_value,
+            descriptions_value,
             keep_existing_value,
             base_model_value,
             require_label_value,
@@ -364,6 +380,8 @@ def create_tab():
                     require_explicit_label=bool(require_label_value),
                     incremental=bool(incremental_value),
                     retry_unresolved=bool(retry_value),
+                    backfill_text=bool(backfill_value),
+                    fetch_descriptions=bool(descriptions_value),
                     keep_existing_rows=bool(keep_existing_value),
                 )
             except Exception as exc:  # noqa: BLE001
@@ -384,6 +402,8 @@ def create_tab():
             recursive,
             incremental,
             retry_unresolved,
+            backfill_text,
+            fetch_descriptions,
             keep_existing,
             base_model_filter,
             require_label,

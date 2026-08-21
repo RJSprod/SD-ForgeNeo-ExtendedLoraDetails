@@ -122,9 +122,9 @@ def register() -> None:
 
     options = {
         "eld_intro": OptionHTML(
-            "Show CSV-sourced Civitai details — model name, trigger words and gallery prompts — "
-            "inside the LoRA card's <b>edit metadata</b> dialog. Run fetches and manage the library "
-            "from the <b>Extended LoRA Details</b> tab."
+            "Show CSV-sourced Civitai details — model name, description, trigger words and gallery "
+            "prompts — inside the LoRA card's <b>edit metadata</b> dialog. Run fetches and manage the "
+            "library from the <b>Extended LoRA Details</b> tab."
         ),
         "eld_enabled": option(True, "Show the extended details panel in the LoRA dialog").needs_reload_ui(),
         "eld_library_dir": option(
@@ -198,6 +198,20 @@ def register() -> None:
         "eld_require_explicit_label": option(
             False,
             "Require an explicit base-model label (rejects unlabeled exact hash matches)",
+        ),
+        "eld_fetch_descriptions": option(
+            True,
+            "Fetch the model description during a Civitai fetch",
+        ).info(
+            "on by default — the description is text, so it costs one request per model page; "
+            "gallery images stay opt-in and are never downloaded by a fetch"
+        ),
+        "eld_backfill_text": option(
+            True,
+            "On a refresh, fill in text details missing from LoRAs already in the library",
+        ).info(
+            "picks up descriptions for rows written before this existed; LoRAs Civitai could not "
+            "resolve are still left alone unless the option below is on"
         ),
         "eld_retry_unresolved": option(
             False,

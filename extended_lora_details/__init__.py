@@ -4,5 +4,5 @@ The package is importable from anywhere inside the WebUI because Forge adds ever
 extension root to ``sys.path`` before loading any script module.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 

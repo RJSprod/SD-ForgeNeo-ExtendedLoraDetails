@@ -194,6 +194,44 @@
     padding-top: 0.25em;
 }
 
+/* ----------------------------------------------------------- description */
+
+/* The description is stored as text and re-formatted here, so the only tags in
+   it are the paragraph/line/link ones this extension emits. */
+.eld-description-block {
+    padding-top: 0.25em;
+}
+
+.eld-description {
+    color: var(--body-text-color);
+    font-size: var(--text-md);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.eld-description p {
+    margin: 0 0 0.85em;
+}
+
+.eld-description p:last-child {
+    margin-bottom: 0;
+}
+
+.eld-description a {
+    color: var(--link-text-color, var(--body-text-color));
+    text-decoration: underline;
+}
+
+.eld-description-heading {
+    margin-top: 1.2em;
+    padding-bottom: 0.3em;
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold, 600);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
 /* --------------------------------------------------------------- prompts */
 
 .eld-count {

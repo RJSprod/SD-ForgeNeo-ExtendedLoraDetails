@@ -8,11 +8,17 @@ applying; there are no hard-coded colours.
 from __future__ import annotations
 
 import html
+import re
 from urllib.parse import urlparse
 
 from .common import truncate
 
 MAX_VALUE_CHARS = 4000
+
+# Applied to already-escaped text, so `"` and `<` cannot appear inside a match;
+# a trailing `.`/`)` is far more likely to be sentence punctuation than URL.
+URL_IN_TEXT_RE = re.compile(r"https?://[^\s<>()\[\]&]+(?:&amp;[^\s<>()\[\]&]*)*")
+PARAGRAPH_SPLIT_RE = re.compile(r"\n{2,}")
 
 
 def escape(value) -> str:
@@ -24,6 +30,64 @@ def _linkify(value: str) -> str:
     if text.startswith(("http://", "https://")) and " " not in text:
         return f'<a href="{escape(text)}" target="_blank" rel="noopener noreferrer">{escape(truncate(text, 90))}</a>'
     return escape(value).replace("\n", "<br>")
+
+
+def _linkify_in_text(escaped: str) -> str:
+    """Turn URLs inside a run of escaped text into links."""
+
+    def replace(match) -> str:
+        url = match.group(0)
+        trailing = ""
+        while url and url[-1] in ".,;:!?'\"":
+            trailing = url[-1] + trailing
+            url = url[:-1]
+        if not url:
+            return match.group(0)
+        return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>{trailing}'
+
+    return URL_IN_TEXT_RE.sub(replace, escaped)
+
+
+def rich_text(value: str) -> str:
+    """Escaped text with its paragraphs, line breaks and links preserved.
+
+    The library stores descriptions as text, never as markup, so this is the one
+    place structure is turned back into HTML - from characters the converter put
+    there, not from anything Civitai wrote.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    paragraphs = []
+    for block in PARAGRAPH_SPLIT_RE.split(text):
+        lines = [_linkify_in_text(escape(line)) for line in block.split("\n")]
+        paragraphs.append("<p>" + "<br>".join(lines) + "</p>")
+    return "".join(paragraphs)
+
+
+def description_html(blocks) -> str:
+    """The Description tab: one section per matched CSV row that has text."""
+    if not blocks:
+        return notice(
+            "No description for this LoRA in the library. Run a Civitai fetch for its folder from the "
+            "<b>Extended LoRA Details</b> tab - with <b>fill in missing text details</b> ticked, a "
+            "refresh picks up descriptions for LoRAs that are already in the library.",
+            kind="empty",
+        )
+
+    sections = []
+    for title, source, model_text, version_text in blocks:
+        parts = [
+            f'<div class="eld-source-title">{escape(title)} <span class="eld-muted">· {escape(source)}</span></div>'
+        ]
+        if model_text:
+            parts.append(f'<div class="eld-description">{rich_text(model_text)}</div>')
+        if version_text:
+            parts.append('<div class="eld-description-heading">About this version</div>')
+            parts.append(f'<div class="eld-description">{rich_text(version_text)}</div>')
+        sections.append(f'<div class="eld-source">{"".join(parts)}</div>')
+
+    return "".join(sections)
 
 
 def notice(message: str, *, kind: str = "info") -> str:
@@ -142,6 +206,7 @@ def library_summary_html(stats: dict) -> str:
         ("Rows", str(stats.get("rows", 0))),
         ("Rows with a SHA256", str(stats.get("hashed_rows", 0))),
         ("Prompts", str(stats.get("prompts", 0))),
+        ("Rows with a description", str(stats.get("described_rows", 0))),
     ]
     body = "".join(f"<tr><th>{escape(label)}</th><td>{escape(value)}</td></tr>" for label, value in rows)
     table = f'<table class="eld-table">{body}</table>'
