@@ -298,3 +298,38 @@ def job_html(snapshots, *, log_lines: int = 18) -> str:
         blocks.append(f'<div class="eld-job">{"".join(body)}</div>')
 
     return "".join(blocks)
+
+
+def preset_folder_summary_html(preset: str, blocks) -> str:
+    """What one UI Preset currently owns, per network type.
+
+    ``blocks`` is ``[(page title, [(folder, includes subfolders, exists)])]``.
+    """
+    name = escape(preset or "—")
+    assigned = [(title, rows) for title, rows in (blocks or []) if rows]
+    if not assigned:
+        return notice(
+            f"Nothing is assigned to <b>{name}</b> yet — every network browser stays unfiltered "
+            "while this preset is active.",
+            kind="empty",
+        )
+
+    sections = [f'<div class="eld-source-title">Assigned to <b>{name}</b></div>']
+    for title, rows in assigned:
+        body = "".join(
+            "<tr>"
+            f"<td><code>{escape(folder)}</code></td>"
+            f"<td>{'this folder and its subfolders' if subfolders else 'this folder only'}</td>"
+            f"<td>{'' if exists else 'folder is missing'}</td>"
+            "</tr>"
+            for folder, subfolders, exists in rows
+        )
+        sections.append(
+            f'<div class="eld-source">'
+            f'<div class="eld-source-title">{escape(title)} <span class="eld-muted">· {len(rows)} folder(s)</span></div>'
+            '<table class="eld-table eld-grid">'
+            "<thead><tr><th>Folder</th><th>Scope</th><th>Problem</th></tr></thead>"
+            f"<tbody>{body}</tbody></table>"
+            "</div>"
+        )
+    return "".join(sections)

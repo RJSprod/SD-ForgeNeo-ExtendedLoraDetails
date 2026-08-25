@@ -9,9 +9,11 @@ client) and the background job manager.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import hashlib
 import json
+import os
 import struct
 import sys
 import tempfile
@@ -20,8 +22,22 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from extended_lora_details import civitai, descriptions, hashing, images, jobs, render  # noqa: E402
+from extended_lora_details import civitai, descriptions, hashing, images, jobs, network_filter, preset_folders, render  # noqa: E402
 from extended_lora_details.library import Library, parse_row  # noqa: E402
+
+
+@contextlib.contextmanager
+def patched_store(store, *, preset: str):
+    """Point the filter at a throwaway store and a chosen UI Preset."""
+    original_store = preset_folders.get_store
+    original_preset = preset_folders.current_preset
+    preset_folders.get_store = lambda: store
+    preset_folders.current_preset = lambda: preset
+    try:
+        yield store
+    finally:
+        preset_folders.get_store = original_store
+        preset_folders.current_preset = original_preset
 
 
 def make_safetensors(path: Path, payload: bytes, metadata: dict | None = None) -> str:
@@ -748,6 +764,235 @@ def test_jobs_run_one_at_a_time():
     while manager.has_active() and time.time() < deadline:
         time.sleep(0.02)
     assert concurrent == [1, 1, 1, 1], concurrent
+
+
+
+# ------------------------------------------------------- preset folder filter
+
+
+def make_network_tree(root: Path) -> dict:
+    """A models folder with two top-level folders and one nested folder."""
+    layout = {
+        "root": root,
+        "zit": root / "zit",
+        "zit_faces": root / "zit" / "faces",
+        "xl": root / "xl",
+    }
+    for path in layout.values():
+        path.mkdir(parents=True, exist_ok=True)
+    for name, path in layout.items():
+        (path / f"{name}.safetensors").write_bytes(b"x")
+    return layout
+
+
+def test_a_folder_without_subfolders_covers_only_itself():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        rules = [preset_folders.Rule(str(tree["zit"]), subfolders=False)]
+
+        assert preset_folders.matches(rules, tree["zit"])
+        assert not preset_folders.matches(rules, tree["zit_faces"])
+        assert not preset_folders.matches(rules, tree["xl"])
+        assert not preset_folders.matches(rules, tree["root"])
+
+        assert preset_folders.file_allowed(tree["zit"] / "zit.safetensors", rules)
+        assert not preset_folders.file_allowed(tree["zit_faces"] / "zit_faces.safetensors", rules)
+
+
+def test_including_subfolders_covers_the_whole_subtree():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        rules = [preset_folders.Rule(str(tree["zit"]), subfolders=True)]
+
+        assert preset_folders.matches(rules, tree["zit"])
+        assert preset_folders.matches(rules, tree["zit_faces"])
+        assert not preset_folders.matches(rules, tree["xl"])
+
+        # a sibling whose name merely starts the same way is not "inside"
+        assert not preset_folders.matches(rules, str(tree["zit"]) + "-extra")
+
+
+def test_assignments_survive_a_reload_and_drop_duplicates():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        config = Path(tmp) / "preset_folders.json"
+        store = preset_folders.PresetFolderStore(config)
+
+        store.set_rules(
+            "zit",
+            "lora",
+            [
+                preset_folders.Rule(str(tree["zit"]), subfolders=True),
+                preset_folders.Rule(str(tree["zit"]) + os.sep, subfolders=False),  # same folder
+                preset_folders.Rule(str(tree["xl"]), subfolders=False),
+            ],
+        )
+
+        reopened = preset_folders.PresetFolderStore(config)
+        rules = reopened.rules("zit", "lora")
+        assert [rule.subfolders for rule in rules] == [True, False]
+        assert preset_folders.normalize_dir(rules[0].path) == preset_folders.normalize_dir(tree["zit"])
+        assert reopened.rules("xl", "lora") == []
+        assert reopened.presets_in_use() == ["zit"]
+
+        # an empty assignment removes the page, and the preset with it
+        reopened.set_rules("zit", "lora", [])
+        assert preset_folders.PresetFolderStore(config).presets_in_use() == []
+
+
+def test_a_bare_string_entry_is_read_as_folder_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "preset_folders.json"
+        config.write_text(
+            json.dumps({"version": 1, "presets": {"zit": {"lora": ["/models/Lora/zit"]}}}),
+            encoding="utf-8",
+        )
+        rules = preset_folders.PresetFolderStore(config).rules("zit", "lora")
+        assert len(rules) == 1
+        assert rules[0].subfolders is False
+
+
+def test_folder_choices_list_the_root_and_every_subfolder():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        (tree["root"] / ".hidden").mkdir()
+
+        choices = preset_folders.folder_choices([str(tree["root"])])
+        labels = [label for label, _ in choices]
+        values = [preset_folders.normalize_dir(value) for _, value in choices]
+
+        assert "Lora/" in labels
+        assert "Lora/zit/" in labels
+        assert "Lora/zit/faces/" in labels
+        assert "Lora/.hidden/" not in labels
+        assert preset_folders.normalize_dir(tree["zit_faces"]) in values
+        assert len(values) == len(set(values))
+
+
+def test_the_filter_only_runs_for_presets_with_folders_assigned():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        store = preset_folders.PresetFolderStore(Path(tmp) / "preset_folders.json")
+        store.set_rules("zit", "lora", [preset_folders.Rule(str(tree["zit"]), subfolders=False)])
+
+        class Page:
+            extra_networks_tabname = "lora"
+
+        with patched_store(store, preset="zit"):
+            rules = network_filter.active_rules(Page())
+            assert rules and rules[0].subfolders is False
+
+        # a preset with nothing assigned is left alone
+        with patched_store(store, preset="xl"):
+            assert network_filter.active_rules(Page()) is None
+
+        # ... and so is a page with nothing assigned
+        class Checkpoints:
+            extra_networks_tabname = "checkpoints"
+
+        with patched_store(store, preset="zit"):
+            assert network_filter.active_rules(Checkpoints()) is None
+
+
+def test_items_outside_the_assigned_folders_are_dropped():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        rules = [preset_folders.Rule(str(tree["zit"]), subfolders=False)]
+
+        inside = {"filename": str(tree["zit"] / "zit.safetensors")}
+        nested = {"filename": str(tree["zit_faces"] / "zit_faces.safetensors")}
+        elsewhere = {"filename": str(tree["xl"] / "xl.safetensors")}
+
+        assert network_filter.item_allowed(inside, rules)
+        assert not network_filter.item_allowed(nested, rules)
+        assert not network_filter.item_allowed(elsewhere, rules)
+
+        # an empty rule list means "the preset owns nothing here": hide it all
+        assert not network_filter.item_allowed(inside, [])
+
+
+def test_folder_buttons_are_kept_only_for_assigned_folders():
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Lora")
+        markup = "".join(
+            f"""<button class='lg secondary gradio-button custom-button{" search-all" if subdir == "" else ""}'
+            onclick='extraNetworksSearchButton("txt2img", "lora", event)'>
+            {subdir if subdir else "all"}
+            </button>"""
+            for subdir in ("", "zit/", "zit/faces/", "xl/")
+        )
+        roots = [str(tree["root"])]
+
+        kept = network_filter.filter_dirs_html(markup, roots, [preset_folders.Rule(str(tree["zit"]), False)])
+        assert "all" in kept
+        assert "zit/" in kept
+        assert "zit/faces/" not in kept
+        assert "xl/" not in kept
+
+        deep = network_filter.filter_dirs_html(markup, roots, [preset_folders.Rule(str(tree["zit"]), True)])
+        assert "zit/faces/" in deep
+        assert "xl/" not in deep
+
+        # backslash-separated labels (Windows) resolve to the same folders
+        windows = markup.replace("zit/faces/", "\\zit\\faces\\")
+        assert "zit\\faces" in network_filter.filter_dirs_html(windows, roots, [preset_folders.Rule(str(tree["zit"]), True)])
+
+        # markup without buttons is handed back untouched
+        assert network_filter.filter_dirs_html("<div>none</div>", roots, []) == "<div>none</div>"
+
+
+def test_the_summary_names_the_scope_of_every_folder():
+    html = render.preset_folder_summary_html(
+        "zit",
+        [("Lora", [("/models/Lora/zit", True, True), ("/models/Lora/gone", False, False)]), ("Checkpoints", [])],
+    )
+    assert "zit" in html
+    assert "this folder and its subfolders" in html
+    assert "this folder only" in html
+    assert "folder is missing" in html
+
+    assert "Nothing is assigned" in render.preset_folder_summary_html("xl", [("Lora", [])])
+
+
+def test_checkpoint_titles_outside_the_assigned_folders_are_dropped():
+    import types
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tree = make_network_tree(Path(tmp) / "Stable-diffusion")
+        rules = [preset_folders.Rule(str(tree["zit"]), subfolders=False)]
+
+        def info(name, path):
+            return types.SimpleNamespace(name=name, short_title=name, filename=str(path))
+
+        checkpoints = {
+            "zit.safetensors": info("zit.safetensors", tree["zit"] / "zit.safetensors"),
+            "nested.safetensors": info("nested.safetensors", tree["zit_faces"] / "nested.safetensors"),
+            "xl.safetensors": info("xl.safetensors", tree["xl"] / "xl.safetensors"),
+        }
+        shared = types.SimpleNamespace(opts=types.SimpleNamespace(sd_checkpoint_dropdown_use_short=False, sd_model_checkpoint="xl.safetensors"))
+        sd_models = types.SimpleNamespace(checkpoints_list=checkpoints)
+
+        original = sys.modules.get("modules")
+        package = types.ModuleType("modules")
+        package.sd_models = sd_models
+        package.shared = shared
+        sys.modules["modules"] = package
+        sys.modules["modules.sd_models"] = sd_models
+        sys.modules["modules.shared"] = shared
+        try:
+            kept = network_filter.filter_checkpoint_tiles(
+                ["zit.safetensors", "nested.safetensors", "xl.safetensors", "mystery.safetensors"],
+                rules,
+            )
+        finally:
+            for name in ("modules", "modules.sd_models", "modules.shared"):
+                sys.modules.pop(name, None)
+            if original is not None:
+                sys.modules["modules"] = original
+
+        # inside the folder: kept. nested: dropped. loaded checkpoint: always kept.
+        # unknown title: kept, so nothing becomes unloadable.
+        assert kept == ["zit.safetensors", "xl.safetensors", "mystery.safetensors"]
 
 
 def main() -> int:

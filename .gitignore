@@ -9,3 +9,6 @@ library/*
 # Downloaded gallery images.
 images/*
 !images/.gitkeep
+
+# Folder assignments per UI Preset, written from the Preset folders tab.
+preset_folders.json

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from modules import script_callbacks
 
-from extended_lora_details import __version__, patch, settings_ui, tab_ui
+from extended_lora_details import __version__, network_filter, patch, settings_ui, tab_ui
 from extended_lora_details.common import log, report
 
 
@@ -28,6 +28,14 @@ def on_before_ui():
         patch.apply()
     except Exception:
         report("could not attach the details panel")
+
+    # Patches the base extra-networks page, so it covers every browser - the
+    # built-in ones and any another extension registers - whatever the order
+    # they were registered in.
+    try:
+        network_filter.apply()
+    except Exception:
+        report("could not attach the preset folder filter")
 
 
 def on_ui_tabs():

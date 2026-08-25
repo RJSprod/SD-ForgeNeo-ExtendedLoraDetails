@@ -56,3 +56,83 @@ function eldReplacePrompt(tabname, text) {
     if (typeof closePopup === "function") closePopup();
     return [];
 }
+
+/*
+ * UI Preset → network browsers.
+ *
+ * Forge renders each extra-network pane server-side, so switching the UI Preset
+ * leaves the cards, the tree and the folder buttons showing the previous
+ * preset's folders until the pane is rebuilt. The hidden per-tab refresh button
+ * is the only path to that rebuild, so it is clicked here — the same thing the
+ * pane's own ↻ control does.
+ */
+
+const eldNetworkTabs = ["txt2img", "img2img"];
+let eldPresetLast = null;
+let eldPresetTimer = null;
+
+function eldGradioRoot() {
+    return typeof gradioApp === "function" ? gradioApp() : document;
+}
+
+function eldOption(name, fallback) {
+    try {
+        if (typeof opts !== "undefined" && opts && name in opts) return opts[name];
+    } catch (e) {
+        /* options are not published yet */
+    }
+    return fallback;
+}
+
+function eldPresetValue() {
+    const root = eldGradioRoot();
+    if (!root) return null;
+    const holder = root.querySelector("#forge_ui_preset");
+    if (!holder) return null;
+    const field = holder.querySelector("input, select, textarea");
+    if (!field) return null;
+    return (field.value || "").trim();
+}
+
+/* Rebuild every network pane. Safe to call when the panes do not exist yet. */
+function eldRefreshExtraNetworks() {
+    const root = eldGradioRoot();
+    if (!root) return [];
+
+    eldNetworkTabs.forEach(function (tabname) {
+        // One click rebuilds every page of that tab, so the first button wins.
+        const button = root.querySelector('[id^="' + tabname + '_"][id$="_extra_refresh_internal"]');
+        if (button) button.dispatchEvent(new Event("click"));
+    });
+    return [];
+}
+
+function eldWatchPreset() {
+    if (eldOption("eld_folder_filter_enabled", true) === false) return;
+    if (eldOption("eld_folder_filter_auto_refresh", true) === false) return;
+
+    const value = eldPresetValue();
+    if (value === null || value === "") return;
+
+    if (eldPresetLast === null) {
+        eldPresetLast = value; // first sighting: the panes already match it
+        return;
+    }
+    if (value === eldPresetLast) return;
+
+    eldPresetLast = value;
+    // The dropdown's text changes while it is being typed in, so settle first
+    // and rebuild once.
+    clearTimeout(eldPresetTimer);
+    eldPresetTimer = setTimeout(eldRefreshExtraNetworks, 600);
+}
+
+if (typeof onUiLoaded === "function") {
+    onUiLoaded(function () {
+        eldPresetLast = eldPresetValue();
+    });
+}
+
+if (typeof onAfterUiUpdate === "function") {
+    onAfterUiUpdate(eldWatchPreset);
+}

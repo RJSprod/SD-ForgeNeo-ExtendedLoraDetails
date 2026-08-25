@@ -132,6 +132,36 @@ def register() -> None:
             "Library directory (CSV files are read from here, recursively)",
         ).info("takes effect immediately"),
         "eld_upload_csv": uploader,
+        "eld_folder_filter_header": OptionHTML(
+            "<h3>UI Preset folder filter</h3>"
+            "Assign folders to each <b>UI Preset</b> on the <b>Extended LoRA Details → Preset folders</b> "
+            "tab. While a preset is active, every extra-network browser — Lora, Checkpoints, Textual "
+            "Inversion, anything else installed — lists only the folders assigned to it, and only their "
+            "quick-navigation buttons."
+        ),
+        "eld_folder_filter_enabled": option(
+            True,
+            "Filter the extra-network browsers by the folders assigned to the active UI Preset",
+        ).info("networks outside those folders are not listed, and searching cannot surface them either"),
+        "eld_folder_filter_dirs": option(
+            True,
+            "Also hide the folder buttons of folders that are not assigned",
+        ).info("the row of quick-navigation buttons above the cards"),
+        "eld_folder_filter_checkpoint_menu": option(
+            False,
+            "Also narrow Forge’s own <b>Checkpoint</b> quick setting to the assigned folders",
+        ).info(
+            "uses the folders assigned to Checkpoints; the checkpoint that is loaded stays in the list "
+            "whatever happens"
+        ),
+        "eld_folder_filter_strict": option(
+            False,
+            "Show nothing when the active preset has no folders assigned for a network type",
+        ).info("off: a network type with no folders assigned keeps showing everything, as before"),
+        "eld_folder_filter_auto_refresh": option(
+            True,
+            "Rebuild the network browsers when the UI Preset changes",
+        ).info("off: press the browser’s own ↻ Refresh after switching preset"),
         "eld_lookup_header": OptionHTML("<h3>Matching</h3>"),
         "eld_hash_lookup": option(True, "Match by SHA256 first (falls back to file path, then file name)"),
         "eld_hash_on_open": option(
