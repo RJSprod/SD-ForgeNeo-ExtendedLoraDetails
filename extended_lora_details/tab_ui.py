@@ -12,7 +12,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from . import images, jobs, render
+from . import folders_ui, images, jobs, render
 from .common import lora_directories, opt, report
 from .library import get_library
 
@@ -111,6 +111,19 @@ def create_tab():
                                 interactive=True,
                             )
                             remove_button = gr.Button("Remove", size="sm")
+
+            # ------------------------------------------------- preset folders
+            with gr.TabItem("Preset folders"):
+                try:
+                    folders_ui.create_ui()
+                except Exception:
+                    report("could not build the preset folder editor")
+                    gr.HTML(
+                        render.notice(
+                            "The folder editor could not be built — see the console for details.",
+                            kind="error",
+                        )
+                    )
 
             # -------------------------------------------------------- images
             with gr.TabItem("Images"):

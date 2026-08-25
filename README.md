@@ -42,6 +42,12 @@ model description, trigger words and gallery prompts, straight from Civitai.
 * **Download the gallery image behind a prompt.** Each prompt keeps the image it
   came from; a button beside the prompt saves it into one flat folder. Delete a
   file and it is simply offered again.
+* **Folders per UI Preset.** Assign folders to a *UI Preset* — Forge Neo's
+  `zit`, `flux`, `xl`, … quick setting — and while that preset is active every
+  extra-network browser (Lora, Checkpoints, Textual Inversion, anything else
+  installed) lists only those folders, including their quick-navigation buttons.
+  Each folder is taken on its own unless you explicitly say *include its
+  subfolders*.
 * **Standard Gradio components throughout**, styled only with Gradio's own theme
   variables, so your theme keeps applying.
 
@@ -114,6 +120,56 @@ details** panel sits below the stock fields:
 
 The panel header summarises the match, and the panel opens itself when there is
 one (configurable).
+
+<!-- ------------------------------------------------------------------ -->
+
+## Folders per UI Preset
+
+Forge Neo's **UI Preset** quick setting already swaps the checkpoint, the
+auxiliary modules and the sampling defaults for an architecture. This adds the
+missing half: which *folders* of each network type belong to that preset.
+
+### Assigning folders
+
+*Extended LoRA Details → **Preset folders***
+
+1. Pick the preset to edit (it opens on the one Forge is using).
+2. Each network type gets its own accordion — **Lora**, **Checkpoints**,
+   **Textual Inversion**, and anything else another extension registers. Tick
+   the folders that belong to the preset.
+3. Every folder you tick appears in the second list, ***…and include their
+   subfolders***. Leave it unticked and the folder contributes only the models
+   sitting directly in it; tick it and the whole subtree comes with it. Nothing
+   is ever pulled in implicitly.
+
+Edits are saved as you make them, into `preset_folders.json` at the extension
+root — not into `config.json`, so a settings reset leaves them alone. The
+network browsers pick a change up on their next rebuild: press **Apply to the
+network browsers** to do that immediately.
+
+### What gets filtered
+
+While a preset is active, for every extra-network browser:
+
+* **Cards** — only models inside the assigned folders are listed. They are
+  filtered out server-side, so searching cannot surface a model from a folder
+  the preset does not own either.
+* **Folder buttons** — the row of quick-navigation buttons shows only assigned
+  folders (and, where the assignment includes them, their subfolders). *all*
+  stays, since it is navigation rather than a folder.
+* **Tree view** — built from the same list, so unassigned folders are simply
+  not there.
+
+A network type with **no folders assigned** to the active preset keeps showing
+everything, so presets you have not set up behave exactly as before. Switch that
+round with *Show nothing when the active preset has no folders assigned*.
+
+Switching preset rebuilds the browsers on its own; turn that off if you would
+rather press the pane's own ↻ *Refresh*.
+
+Forge's own **Checkpoint** quick setting can be narrowed the same way — it is
+off by default, and the checkpoint that is currently loaded always stays in the
+list.
 
 <!-- ------------------------------------------------------------------ -->
 
@@ -213,6 +269,11 @@ walk defensively. The CSV is written atomically.
 | Show the extended details panel | on | needs a *Reload UI* |
 | Library directory | `<extension>/library` | takes effect immediately |
 | Add a CSV to the library | — | the uploader |
+| Filter the browsers by the active preset's folders | on | assign them on the *Preset folders* tab |
+| Hide the folder buttons of unassigned folders | on | the quick-navigation row above the cards |
+| Also narrow Forge's *Checkpoint* quick setting | off | the loaded checkpoint always stays listed |
+| Show nothing when nothing is assigned | off | on: an unconfigured preset shows an empty browser |
+| Rebuild the browsers when the UI Preset changes | on | off: press the pane's own ↻ |
 | Match by SHA256 first | on | falls back to path, then name |
 | Compute a missing SHA256 when the dialog opens | on | turn off and use *Precompute hashes* instead |
 | Open the panel automatically | off | |
@@ -258,6 +319,14 @@ walk defensively. The CSV is written atomically.
   `sshs_model_hash` from the safetensors header — Civitai's `by-hash` endpoint
   wants the full-file digest. Both are indexed, so CSVs from other tools that
   carry an AddNet hash still match.
+* **The folder filter is server-side.** Forge renders each network pane as HTML
+  before it reaches the browser, so a filtered model is never sent to the page —
+  it cannot be found by searching, and the pane is no larger than it needs to
+  be. The flip side is that a change only shows after the pane is rebuilt, which
+  is what *Apply to the network browsers* (and switching preset) does.
+* **Assignments are stored as absolute paths.** Move your models elsewhere and
+  the folder shows up as *(missing)* on the *Preset folders* tab, still ticked,
+  so you can see what needs repointing rather than losing the assignment.
 * Scans run one at a time on a single worker thread, and are cancellable from
   the *Fetch from Civitai* tab.
 * If the built-in LoRA extension is disabled, the panel quietly does not appear;
