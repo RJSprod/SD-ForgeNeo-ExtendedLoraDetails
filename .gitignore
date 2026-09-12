@@ -12,3 +12,6 @@ images/*
 
 # Folder assignments per UI Preset, written from the Preset folders tab.
 preset_folders.json
+
+# The API key and the folder the last Civitai fetch used.
+last_used.json

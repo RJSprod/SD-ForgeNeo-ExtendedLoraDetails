@@ -14,6 +14,7 @@ import csv
 import hashlib
 import json
 import os
+import stat
 import struct
 import sys
 import tempfile
@@ -22,7 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from extended_lora_details import civitai, descriptions, hashing, images, jobs, network_filter, preset_folders, render  # noqa: E402
+from extended_lora_details import civitai, descriptions, hashing, images, jobs, network_filter, preset_folders, render, state  # noqa: E402
 from extended_lora_details.library import Library, parse_row  # noqa: E402
 
 
@@ -38,6 +39,39 @@ def patched_store(store, *, preset: str):
     finally:
         preset_folders.get_store = original_store
         preset_folders.current_preset = original_preset
+
+
+@contextlib.contextmanager
+def patched_state(path):
+    """Point the remembered-values helpers at a throwaway file."""
+    store = state.LastUsedStore(path)
+    original = state.get_store
+    state.get_store = lambda: store
+    try:
+        yield store
+    finally:
+        state.get_store = original
+
+
+@contextlib.contextmanager
+def patched_options(**values):
+    """Stand in for ``modules.shared.opts``, so option-gated code can be tested."""
+    import types
+
+    originals = {name: sys.modules.get(name) for name in ("modules", "modules.shared")}
+    package = types.ModuleType("modules")
+    shared = types.SimpleNamespace(opts=types.SimpleNamespace(**values))
+    package.shared = shared
+    sys.modules["modules"] = package
+    sys.modules["modules.shared"] = shared
+    try:
+        yield
+    finally:
+        for name, original in originals.items():
+            if original is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = original
 
 
 def make_safetensors(path: Path, payload: bytes, metadata: dict | None = None) -> str:
@@ -765,6 +799,98 @@ def test_jobs_run_one_at_a_time():
         time.sleep(0.02)
     assert concurrent == [1, 1, 1, 1], concurrent
 
+
+
+# ------------------------------------------------------- remembered values
+
+
+def test_the_key_and_folder_of_the_last_fetch_are_remembered():
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "loras"
+        folder.mkdir()
+        path = Path(tmp) / "last_used.json"
+
+        with patched_state(path) as store:
+            state.remember_api_key("  secret-key  ")
+            state.remember_scan_folder(folder)
+
+            assert state.remembered_api_key() == "secret-key"
+            assert state.remembered_scan_folder() == str(folder)
+
+            # a fresh reader sees both - which is all the next session does
+            reread = state.LastUsedStore(path)
+            assert reread.get(state.API_KEY) == "secret-key"
+            assert reread.get(state.SCAN_FOLDER) == str(folder)
+
+            # a run without a key never clears the one that worked
+            state.remember_api_key("")
+            assert store.get(state.API_KEY) == "secret-key"
+
+        if os.name == "posix":
+            assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, "the file holds an API key"
+
+
+def test_a_folder_that_has_gone_away_is_not_offered_but_is_kept():
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "loras"
+        folder.mkdir()
+
+        with patched_state(Path(tmp) / "last_used.json") as store:
+            state.remember_scan_folder(folder)
+            folder.rmdir()
+
+            # an unplugged drive must not become a default that cannot be scanned
+            assert state.remembered_scan_folder() == ""
+            # but the choice is kept, and is the default again when it comes back
+            assert store.get(state.SCAN_FOLDER) == str(folder)
+            folder.mkdir()
+            assert state.remembered_scan_folder() == str(folder)
+
+
+def test_turning_remembering_off_hides_the_values_and_drops_the_key():
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "loras"
+        folder.mkdir()
+
+        with patched_state(Path(tmp) / "last_used.json") as store:
+            state.remember_api_key("secret-key")
+            state.remember_scan_folder(folder)
+
+            with patched_options(eld_remember_api_key=False, eld_remember_scan_folder=False):
+                assert state.remembered_api_key() == ""
+                assert state.remembered_scan_folder() == ""
+                state.remember_api_key("another-key")
+                assert store.get(state.API_KEY) == "secret-key", "nothing is stored while it is off"
+                state.forget_api_key()  # what turning the setting off does
+
+            assert state.remembered_api_key() == ""
+            assert state.remembered_scan_folder() == str(folder), "only the key is forgotten"
+
+
+def test_only_a_key_civitai_answered_counts_as_used():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        hashing.CACHE = hashing.HashCache(root / "hashes.json")
+        loras = root / "loras"
+        sha_a = make_safetensors(loras / "alpha.safetensors", b"A")
+
+        original, _created = _stub_scan(civitai, {sha_a})
+        try:
+            report = civitai.scan_folder(loras, root / "out.csv", log=lambda _m: None)
+            assert report.api_answered, "an answered lookup is what proves the key was accepted"
+
+            report = civitai.scan_folder(loras, root / "out.csv", skip_hashes={sha_a}, log=lambda _m: None)
+            assert not report.api_answered, "a run that asked nothing proves nothing"
+
+            class Rejecting(StubClient):
+                def version_by_hash(self, sha256):
+                    raise civitai.CivitaiError("Civitai returned HTTP 401; check the API key")
+
+            civitai.CivitaiClient = lambda **kwargs: Rejecting(set(), **kwargs)
+            report = civitai.scan_folder(loras, root / "rejected.csv", log=lambda _m: None)
+            assert report.processed == 1 and not report.api_answered
+        finally:
+            civitai.CivitaiClient = original
 
 
 # ------------------------------------------------------- preset folder filter

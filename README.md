@@ -29,6 +29,9 @@ model description, trigger words and gallery prompts, straight from Civitai.
   tab runs a fetch over any folder you pick. It hashes each file, resolves it
   through Civitai's `by-hash` endpoint, and writes a CSV into the library —
   on a worker thread, so generation keeps working.
+* **Picks up where you left off.** The fetch tab opens on the folder you scanned
+  last, with the API key of the last fetch Civitai accepted already in its key
+  field, so a new session is one press of *Start fetch*.
 * **Refresh for new content only.** A fetch defaults to *incremental*: any LoRA
   the library has already recorded is skipped — including ones Civitai had
   nothing for — so re-running it on a folder only costs requests for LoRAs you
@@ -79,6 +82,14 @@ Open the *Extended LoRA Details* tab, go to *Fetch from Civitai*, pick the folde
 (your Krea 2 folder, say) and press **Start fetch**. Progress and a live log are
 on the *Jobs* tab. Everything it finds is written into the extension's own
 library directory as a CSV — nothing is written next to your models.
+
+Next time, the tab is already set up the way you left it: the **folder you
+scanned last** is the one selected, and the **API key of the last fetch Civitai
+accepted** is filled into the key field. Both are kept in `last_used.json` at the
+extension root — not in `config.json`, so a settings reset leaves them alone —
+and either can be turned off in settings. A key you type over the filled-in one
+still wins for that run, and an empty field still falls back to the key in
+settings, then to `CIVITAI_API_KEY`.
 
 By default it collects the **text** for every LoRA it can resolve: model name,
 base model, Civitai link, trigger words, gallery prompts, and the model
@@ -284,6 +295,8 @@ walk defensively. The CSV is written atomically.
 | Largest image to download | 32 MB | |
 | Image download timeout | 30 s | |
 | Civitai API key | — | falls back to `CIVITAI_API_KEY` |
+| Remember the API key that last worked | on | fills the fetch tab's key field; turning it off deletes the stored key |
+| Open the fetch tab on the folder scanned last | on | off: it opens on the first LoRA folder, as before |
 | Fetch the model description | on | one extra request per model page |
 | Fill in missing text details on a refresh | on | tops up rows that have no description yet |
 | Delay between requests / timeout / images per version | 0.15 s / 30 s / all | |
@@ -327,6 +340,11 @@ walk defensively. The CSV is written atomically.
 * **Assignments are stored as absolute paths.** Move your models elsewhere and
   the folder shows up as *(missing)* on the *Preset folders* tab, still ticked,
   so you can see what needs repointing rather than losing the assignment.
+* **A key is remembered only once Civitai has answered it.** A run that never
+  got past a rejected key — or that skipped every LoRA and so asked nothing —
+  leaves the stored key alone, so a typo cannot displace the key that works. The
+  folder, by contrast, is remembered as soon as the fetch is queued: a cancelled
+  run still tells the tab where you were working.
 * Scans run one at a time on a single worker thread, and are cancellable from
   the *Fetch from Civitai* tab.
 * If the built-in LoRA extension is disabled, the panel quietly does not appear;
@@ -342,6 +360,6 @@ python tests/test_extended_lora_details.py     # or: pytest tests/
 
 These cover CSV parsing and column aliasing, hash/path/name matching, the
 Civitai identity rules, incremental refresh and the text backfill, the
-HTML → text description conversion and its rendering, atomic CSV writes, and the
-job manager. They need no WebUI and make no network calls — the Civitai client is
-stubbed.
+HTML → text description conversion and its rendering, atomic CSV writes, the
+values carried over from the last fetch, and the job manager. They need no WebUI
+and make no network calls — the Civitai client is stubbed.

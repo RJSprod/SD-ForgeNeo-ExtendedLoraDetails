@@ -725,6 +725,9 @@ class ScanReport:
     resolved: int = 0
     failed: int = 0
     cancelled: bool = False
+    # True once Civitai has answered a lookup, which is what tells the caller the
+    # credentials this run used were accepted rather than rejected.
+    api_answered: bool = False
     counts: dict[str, int] = field(default_factory=dict)
     rows: list[dict[str, str]] = field(default_factory=list)
 
@@ -960,6 +963,11 @@ def scan_folder(
 
             report.processed += 1
             report.counts[resolution.status] = report.counts.get(resolution.status, 0) + 1
+            # "error" is the one status that means the request itself did not go
+            # through - a rejected API key lands there - so any other status is
+            # proof that Civitai answered the key this run was given.
+            if resolution.status != "error":
+                report.api_answered = True
             rows_by_file[relative_name] = merge_row(
                 existing.get(relative_name),
                 row_for(relative_name, sha256, addnet, resolution),

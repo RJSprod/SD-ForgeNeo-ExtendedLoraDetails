@@ -280,11 +280,15 @@ def submit_scan(
     keep_existing_rows: bool = True,
 ) -> Job:
     """Queue a Civitai fetch for one folder, writing into the library."""
-    from . import civitai
+    from . import civitai, state
     from .library import get_library
 
     folder_path = Path(folder).expanduser()
     library = get_library()
+
+    # Remembered when the job is queued rather than when it finishes: the tab
+    # should reopen on the folder you last pointed it at, cancelled run or not.
+    state.remember_scan_folder(folder_path)
 
     name = (output_name or "").strip()
     if not name:
@@ -333,6 +337,11 @@ def submit_scan(
             log=job.log_line,
             progress=progress,
         )
+
+        # Only a key Civitai actually answered is worth keeping: a run that
+        # never got past a rejected one must not replace the key that worked.
+        if api_key and result.api_answered:
+            state.remember_api_key(api_key)
 
         library.reload()
 
