@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import gradio as gr
 
-from . import render
-from .common import default_library_dir, report
+from . import render, state
+from .common import default_library_dir, opt, report
 from .images import default_image_dir
 from .library import get_library
 
@@ -109,6 +109,12 @@ def _uploader_component(**kwargs):
     return uploader
 
 
+def _forget_key_when_off() -> None:
+    """Turning remembering off is also how the stored key is deleted."""
+    if not opt("eld_remember_api_key", True):
+        state.forget_api_key()
+
+
 def register() -> None:
     """Called from ``on_ui_settings``."""
     from modules import shared
@@ -119,6 +125,17 @@ def register() -> None:
 
     uploader = OptionInfo([], "Add a CSV to the library", component=_uploader_component, section=SECTION)
     uploader.do_not_save = True
+
+    # Assigned rather than passed to the constructor, so the option still
+    # registers on a build whose OptionInfo does not take ``onchange``.
+    remember_key = option(
+        True,
+        "Remember the Civitai API key that last worked, and fill it into the fetch tab",
+    ).info(
+        f"kept in {state.STATE_NAME} at the extension root, not in config.json; turning this off "
+        "forgets the stored key"
+    )
+    remember_key.onchange = _forget_key_when_off
 
     options = {
         "eld_intro": OptionHTML(
@@ -204,6 +221,11 @@ def register() -> None:
         "eld_civitai_api_key": option("", "Civitai API key").info(
             "optional, but improves coverage; falls back to the CIVITAI_API_KEY environment variable"
         ),
+        "eld_remember_api_key": remember_key,
+        "eld_remember_scan_folder": option(
+            True,
+            "Open the fetch tab on the folder that was scanned last",
+        ).info("off: it opens on the first LoRA folder, as before"),
         "eld_request_delay": OptionInfo(
             0.15,
             "Minimum delay between Civitai requests (seconds)",

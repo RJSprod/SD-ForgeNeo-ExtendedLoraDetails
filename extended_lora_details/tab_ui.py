@@ -12,7 +12,7 @@ from pathlib import Path
 
 import gradio as gr
 
-from . import folders_ui, images, jobs, render
+from . import folders_ui, images, jobs, preset_folders, render, state
 from .common import lora_directories, opt, report
 from .library import get_library
 
@@ -42,8 +42,13 @@ def _source_names() -> list[str]:
         return []
 
 
-def _folder_choices() -> list[str]:
-    """Every LoRA root plus its immediate subfolders — the useful scan targets."""
+def _folder_choices(keep: str = "") -> list[str]:
+    """Every LoRA root plus its immediate subfolders — the useful scan targets.
+
+    ``keep`` is a folder that must stay selectable whatever the listing holds —
+    the one a previous fetch ran on, say, which can sit deeper than this reaches
+    or under a root that is no longer configured.
+    """
     choices: list[str] = []
     for root in lora_directories():
         if not os.path.isdir(root):
@@ -55,7 +60,19 @@ def _folder_choices() -> list[str]:
                     choices.append(entry.path)
         except OSError:
             continue
+
+    wanted = str(keep or "").strip()
+    if wanted and preset_folders.normalize_dir(wanted) not in {preset_folders.normalize_dir(path) for path in choices}:
+        choices.insert(0, wanted)
     return choices
+
+
+def _default_folder() -> str | None:
+    """The folder the last fetch ran on, else the first LoRA root."""
+    remembered = state.remembered_scan_folder()
+    if remembered:
+        return remembered
+    return (_folder_choices() or [None])[0]
 
 
 def _image_status() -> str:
@@ -157,8 +174,8 @@ def create_tab():
                 with gr.Row():
                     folder = gr.Dropdown(
                         label="Folder to scan",
-                        choices=_folder_choices(),
-                        value=(_folder_choices() or [None])[0],
+                        choices=_folder_choices(state.remembered_scan_folder()),
+                        value=_default_folder,
                         allow_custom_value=True,
                         interactive=True,
                         scale=4,
@@ -212,7 +229,13 @@ def create_tab():
                             value=bool(opt("eld_require_explicit_label", False)),
                         )
                     with gr.Row():
-                        api_key = gr.Textbox(label="Civitai API key", type="password", placeholder="uses the setting when empty")
+                        api_key = gr.Textbox(
+                            label="Civitai API key",
+                            type="password",
+                            value=state.remembered_api_key,
+                            placeholder="uses the setting when empty",
+                            info="filled in with the key of the last fetch Civitai accepted",
+                        )
                         max_images = gr.Slider(
                             label="Gallery images per version (0 = all)",
                             minimum=0,
@@ -339,8 +362,15 @@ def create_tab():
             outputs=[upload_status, library_status, sources_table, source_picker],
         )
 
+        def do_refresh_folders(current):
+            """Re-list the folders without losing the one that is selected."""
+            current = str(current or "").strip()
+            choices = _folder_choices(current)
+            return gr.update(choices=choices, value=current or (choices[0] if choices else None))
+
         refresh_folders.click(
-            fn=lambda: gr.update(choices=_folder_choices()),
+            fn=do_refresh_folders,
+            inputs=[folder],
             outputs=[folder],
             show_progress=False,
         )
