@@ -10,9 +10,12 @@ identity rules of the original are kept intact:
 * the returned *version id* is authoritative for trigger words and for filtering
   the gallery, so sibling versions on the same model page cannot bleed in
 
-The Krea 2 specific gate is generalised into an optional ``base_model_filter``
-so the extension is useful for any LoRA collection; leaving it empty accepts any
-exact hash match, which is the behaviour of the original script's default mode.
+The Krea 2 specific gate is generalised into an optional ``base_model_filter`` -
+one base model, or several ("Krea 2, MOSS Image") - so the extension is useful
+for any LoRA collection; leaving it empty accepts any exact hash match, which is
+the behaviour of the original script's default mode. Where Civitai's label is
+generic, a LoRA's own tensor names can stand in for it (MOSS-Image's layout is
+unmistakable).
 
 What a scan collects is *text*: model name, base model, trigger words, gallery
 prompts and - fetched by default - the model's description, converted from
@@ -38,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin, urlparse
 
+from . import layouts
 from .common import SAFETENSORS_EXTENSIONS, clean_cell, normalize_key
 from .descriptions import html_to_text
 from .hashing import addnet_sha256_file, sha256_file
@@ -79,6 +83,21 @@ NEUTRAL_BASE_LABELS = {
     "unspecified",
 }
 
+# Civitai's ``baseModelType`` names the *variant* of a version, never its family,
+# so it can neither satisfy a base-model filter nor contradict one.
+VARIANT_TYPE_LABELS = {"standard", "inpainting", "refiner", "pix2pix"}
+
+# Several base models can be accepted at once: "Krea 2, MOSS Image".
+BASE_MODEL_SPLIT_RE = re.compile(r"\s*[,;|]\s*")
+
+# Architectures recognisable from a LoRA's own tensor names, for when Civitai's
+# label is missing or generic ("Other"). A pattern is only listed when it is
+# specific to that architecture's module layout: MOSS-Image is the one DiT whose
+# blocks keep their projections in a named ``proj`` dict, MLP included.
+LOCAL_ARCHITECTURES = (
+    ("MOSS Image", re.compile(r"(?:^|[._])layers[._]\d+[._]proj[._]ffn_(?:up_gate|down)(?:[._]|$)")),
+)
+
 @dataclass(frozen=True)
 class PromptImage:
     """A gallery prompt together with the image it was taken from."""
@@ -97,6 +116,7 @@ BASE_COLUMNS = [
     "civitai_version_id",
     "civitai_version_name",
     "base_model",
+    "civitai_creator",
     "civitai_url",
     "trigger_words",
     "status",
@@ -119,11 +139,28 @@ class Cancelled(RuntimeError):
 # --------------------------------------------------------------- base model
 
 
-def matches_base_model(value: Any, wanted: str) -> bool:
-    """Loose comparison so "Krea 2" matches "Krea2", "Krea-2-Turbo", ..."""
-    wanted_key = normalize_key(wanted)
-    if not wanted_key:
+def base_model_choices(wanted: Any) -> list[str]:
+    """The base models a filter accepts: ``"Krea 2, MOSS Image"`` is two."""
+    if isinstance(wanted, (list, tuple, set)):
+        pieces = [str(item) for item in wanted]
+    else:
+        pieces = BASE_MODEL_SPLIT_RE.split(str(wanted or ""))
+    return [piece.strip() for piece in pieces if normalize_key(piece)]
+
+
+def matches_base_model(value: Any, wanted: Any) -> bool:
+    """Loose comparison so "Krea 2" matches "Krea2", "Krea-2-Turbo", ...
+
+    ``wanted`` may name several base models; matching any one of them is enough.
+    """
+    choices = base_model_choices(wanted)
+    if not choices:
         return True
+    return any(_matches_one_base_model(value, choice) for choice in choices)
+
+
+def _matches_one_base_model(value: Any, wanted: str) -> bool:
+    wanted_key = normalize_key(wanted)
     text = normalize_key(value)
     if not text:
         return False
@@ -143,42 +180,78 @@ class BaseModelAssessment:
     reason: str
 
 
-def read_safetensors_metadata(path: Path) -> dict[str, Any]:
-    """Read only the safetensors JSON header. Failures are not fatal."""
+def read_safetensors_header(path: Path) -> tuple[dict[str, Any], list[str]]:
+    """``(metadata, tensor names)`` from the JSON header only. Never fatal."""
     try:
+        path = Path(path)
         file_size = path.stat().st_size
         if file_size < 10:
-            return {}
+            return {}, []
         with path.open("rb") as handle:
             raw_len = handle.read(8)
             if len(raw_len) != 8:
-                return {}
+                return {}, []
             header_len = struct.unpack("<Q", raw_len)[0]
             if header_len < 2 or header_len > file_size - 8 or header_len > MAX_HEADER_BYTES:
-                return {}
+                return {}, []
             raw_header = handle.read(header_len)
             if len(raw_header) != header_len:
-                return {}
+                return {}, []
         header = json.loads(raw_header.decode("utf-8"))
         if not isinstance(header, dict):
-            return {}
+            return {}, []
         metadata = header.get("__metadata__", {})
-        return metadata if isinstance(metadata, dict) else {}
+        names = [str(key) for key in header if key != "__metadata__"]
+        return (metadata if isinstance(metadata, dict) else {}), names
     except (OSError, ValueError, UnicodeDecodeError, struct.error):
-        return {}
+        return {}, []
 
 
-def local_base_model_evidence(metadata: dict[str, Any], wanted: str) -> str | None:
+def read_safetensors_metadata(path: Path) -> dict[str, Any]:
+    """Read only the safetensors JSON header. Failures are not fatal."""
+    return read_safetensors_header(path)[0]
+
+
+def local_architecture(tensor_names: Iterable[str]) -> str:
+    """The architecture a LoRA's tensor names identify, or ``""``."""
+    names = list(tensor_names or ())
+    for label, pattern in LOCAL_ARCHITECTURES:
+        if any(pattern.search(name) for name in names):
+            return label
+    return ""
+
+
+def local_base_model_evidence(metadata: dict[str, Any], wanted: str, tensor_names: Iterable[str] = ()) -> str | None:
     for key, value in metadata.items():
         if normalize_key(key) in LOCAL_BASE_KEYS and matches_base_model(value, wanted):
             return f"safetensors metadata {key}={value}"
+    architecture = local_architecture(tensor_names)
+    if architecture and matches_base_model(architecture, wanted):
+        return f"safetensors tensor names are {architecture}'s"
     return None
 
 
-def assess_base_model(version: dict[str, Any], local_metadata: dict[str, Any], *, wanted: str, require_explicit: bool) -> BaseModelAssessment:
-    """Validate the hash-matched version against the requested base model."""
-    if not normalize_key(wanted):
-        label = clean_cell(version.get("baseModel")) or clean_cell(version.get("baseModelType"))
+def family_label(version: dict[str, Any]) -> str:
+    """The base model a version names: ``baseModel``, or a ``baseModelType``
+    that is more than a variant such as "Standard"."""
+    label = clean_cell(version.get("baseModel"))
+    if label:
+        return label
+    fallback = clean_cell(version.get("baseModelType"))
+    return "" if normalize_key(fallback) in VARIANT_TYPE_LABELS else fallback
+
+
+def assess_base_model(
+    version: dict[str, Any],
+    local_metadata: dict[str, Any],
+    *,
+    wanted: str,
+    require_explicit: bool,
+    tensor_names: Iterable[str] = (),
+) -> BaseModelAssessment:
+    """Validate the hash-matched version against the requested base model(s)."""
+    if not base_model_choices(wanted):
+        label = family_label(version)
         return BaseModelAssessment(True, bool(label), f"exact hash match (baseModel={label or 'unspecified'})")
 
     fields = [("baseModel", version.get("baseModel")), ("baseModelType", version.get("baseModelType"))]
@@ -190,14 +263,18 @@ def assess_base_model(version: dict[str, Any], local_metadata: dict[str, Any], *
         if value is None or not str(value).strip():
             saw_neutral = True
             continue
+        key = normalize_key(value)
+        if field_name == "baseModelType" and key in VARIANT_TYPE_LABELS:
+            saw_neutral = True
+            continue
         if matches_base_model(value, wanted):
             return BaseModelAssessment(True, True, f"Civitai {field_name}={value}")
-        if normalize_key(value) in NEUTRAL_BASE_LABELS:
+        if key in NEUTRAL_BASE_LABELS:
             saw_neutral = True
         else:
             conflicting.append(f"{field_name}={value}")
 
-    local_evidence = local_base_model_evidence(local_metadata, wanted)
+    local_evidence = local_base_model_evidence(local_metadata, wanted, tensor_names)
     if local_evidence:
         return BaseModelAssessment(True, True, local_evidence)
 
@@ -302,6 +379,11 @@ def extract_positive_prompt(image: dict[str, Any]) -> str:
                             text = scalar_prompt(subvalue)
                             if text:
                                 return text
+                    # A MOSS-Image layout the API passed on as an object rather
+                    # than as the compiled line it was written as.
+                    text = layouts.compile_object(value)
+                    if text:
+                        return text
 
     for container in containers:
         for nested_key in ("parameters", "generation", "generation_data", "generationData"):
@@ -615,6 +697,7 @@ class Resolution:
     version_id: int | None = None
     version_name: str = ""
     base_model: str = ""
+    creator: str = ""
     url: str = ""
     model_description: str = ""
     version_description: str = ""
@@ -641,8 +724,14 @@ def resolve_hash(
     max_images: int = 0,
     fetch_descriptions: bool = True,
     allowed_types: Iterable[str] = ("lora", "locon", "loha", "lycoris", "dora"),
+    tensor_names: Iterable[str] = (),
 ) -> Resolution:
-    """Resolve one SHA256 into the CSV payload for that LoRA."""
+    """Resolve one SHA256 into the CSV payload for that LoRA.
+
+    ``tensor_names`` are the file's own, from its header: a MOSS-Image LoRA is
+    recognisable by them, which counts as base-model evidence when Civitai's
+    label is generic.
+    """
     try:
         version = client.version_by_hash(sha256)
     except CivitaiError as exc:
@@ -667,7 +756,13 @@ def resolve_hash(
     if model_type and allowed and model_type not in allowed:
         return Resolution("not_lora", version_id=version_id, reason=f"the Civitai model type is {model_type_raw}")
 
-    assessment = assess_base_model(version, local_metadata, wanted=base_model_filter, require_explicit=require_explicit_label)
+    assessment = assess_base_model(
+        version,
+        local_metadata,
+        wanted=base_model_filter,
+        require_explicit=require_explicit_label,
+        tensor_names=tensor_names,
+    )
     if not assessment.allowed:
         return Resolution("base_model_mismatch", version_id=version_id, reason=assessment.reason)
 
@@ -677,7 +772,11 @@ def resolve_hash(
         model_id = None
 
     model_name = clean_cell(parent_model.get("name"))
-    base_model = clean_cell(version.get("baseModel")) or clean_cell(version.get("baseModelType"))
+    base_model = family_label(version)
+    # Only the model page names its creator, so this is filled in whenever the
+    # page is fetched - which collecting descriptions always does.
+    creator = parent_model.get("creator")
+    creator_name = clean_cell(creator.get("username")) if isinstance(creator, dict) else ""
     url = f"https://civitai.com/models/{model_id}?modelVersionId={version_id}" if model_id else ""
 
     prompts, warning = client.gallery_prompts(version_id, embedded_images=version.get("images"), max_images=max_images)
@@ -690,6 +789,7 @@ def resolve_hash(
         "version_id": version_id,
         "version_name": clean_cell(version.get("name")),
         "base_model": base_model,
+        "creator": creator_name,
         "url": url,
         "model_description": html_to_text(parent_model.get("description")) if fetch_descriptions else "",
         "version_description": html_to_text(version.get("description")) if fetch_descriptions else "",
@@ -825,6 +925,7 @@ def row_for(relative_name: str, sha256: str, addnet: str, resolution: Resolution
         "civitai_version_id": str(resolution.version_id) if resolution.version_id else "",
         "civitai_version_name": resolution.version_name,
         "base_model": resolution.base_model,
+        "civitai_creator": resolution.creator,
         "civitai_url": resolution.url,
         "trigger_words": ", ".join(resolution.trigger_words),
         "status": resolution.status,
@@ -944,7 +1045,7 @@ def scan_folder(
 
             resolution = resolution_cache.get(sha256)
             if resolution is None:
-                local_metadata = read_safetensors_metadata(path)
+                local_metadata, tensor_names = read_safetensors_header(path)
                 try:
                     resolution = resolve_hash(
                         sha256,
@@ -954,6 +1055,7 @@ def scan_folder(
                         require_explicit_label=require_explicit_label,
                         max_images=max_images,
                         fetch_descriptions=fetch_descriptions,
+                        tensor_names=tensor_names,
                     )
                 except Cancelled:
                     report.cancelled = True

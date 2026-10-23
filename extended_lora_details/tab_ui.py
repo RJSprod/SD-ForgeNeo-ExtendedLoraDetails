@@ -146,7 +146,7 @@ def create_tab():
             with gr.TabItem("Images"):
                 gr.HTML(
                     render.notice(
-                        "Gallery images downloaded from the <b>Prompts</b> tab of a LoRA's details dialog "
+                        "Gallery images downloaded from a LoRA's details dialog "
                         "all land in one folder, so they can be managed in one place.",
                         kind="info",
                     )
@@ -165,9 +165,9 @@ def create_tab():
                         "Hashes every <code>.safetensors</code> under the chosen folder, resolves each one "
                         "through Civitai's <code>by-hash</code> endpoint, and writes the result into the "
                         "library as a CSV. Runs in the background — you can keep generating.<br>"
-                        "Text is fetched by default: model name, base model, trigger words, gallery prompts "
-                        "and the model description. Gallery <b>images are never downloaded by a fetch</b> — "
-                        "ask for those from a LoRA's <b>Prompts</b> tab when you want them.",
+                        "Text is fetched by default: model name, creator, base model, trigger words, gallery "
+                        "prompts and the model description. Gallery <b>images are never downloaded by a fetch</b> — "
+                        "ask for those from a LoRA's details dialog when you want them.",
                         kind="info",
                     )
                 )
@@ -220,9 +220,9 @@ def create_tab():
                 with gr.Accordion("Fetch options", open=False):
                     with gr.Row():
                         base_model_filter = gr.Textbox(
-                            label="Only accept this base model",
+                            label="Only accept these base models",
                             value=str(opt("eld_base_model_filter", "")),
-                            placeholder='e.g. "Krea 2" — empty accepts any exact hash match',
+                            placeholder='e.g. "Krea 2, MOSS Image" — empty accepts any exact hash match',
                         )
                         require_label = gr.Checkbox(
                             label="Require an explicit base-model label",

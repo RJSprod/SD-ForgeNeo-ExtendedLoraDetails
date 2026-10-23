@@ -12,18 +12,21 @@ from __future__ import annotations
 import contextlib
 import csv
 import hashlib
+import html as html_module
 import json
 import os
+import re
 import stat
 import struct
 import sys
 import tempfile
 import time
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from extended_lora_details import civitai, descriptions, hashing, images, jobs, network_filter, preset_folders, render, state  # noqa: E402
+from extended_lora_details import civitai, descriptions, hashing, images, jobs, layouts, network_filter, preset_folders, render, state  # noqa: E402
 from extended_lora_details.library import Library, parse_row  # noqa: E402
 
 
@@ -323,7 +326,7 @@ class StubClient:
         if not with_description:
             return version["model"]
         self.model_pages.append(version["modelId"])
-        return {**version["model"], "description": "<p>About <b>this</b> model.</p>"}
+        return {**version["model"], "description": "<p>About <b>this</b> model.</p>", "creator": {"username": "maker"}}
 
     def gallery_prompts(self, _version_id, *, embedded_images, max_images):
         return (civitai.PromptImage("a prompt", "https://image.example/1.jpeg", "1"),), None
@@ -521,6 +524,7 @@ def test_a_fetch_stores_the_description_and_backfills_rows_that_lack_one():
             row = next(r for r in csv.DictReader(output.open(encoding="utf-8")) if r["sha256"] == sha_a)
             assert row["model_description"] == "About this model."
             assert row["version_description"] == "Version notes."
+            assert row["civitai_creator"] == "maker", "the model page names the creator"
 
             library = Library(root)
             library.reload()
@@ -573,6 +577,7 @@ def test_turning_descriptions_off_costs_no_extra_request():
             assert created["client"].model_pages == []
             row = next(iter(csv.DictReader(output.open(encoding="utf-8"))))
             assert row["model_description"] == "" and row["civitai_model_name"] == "Stub Model"
+            assert row["civitai_creator"] == "", "only the model page names the creator"
         finally:
             civitai.CivitaiClient = original
 
@@ -1147,6 +1152,317 @@ def test_the_description_fallback_never_leaks_a_script():
         descriptions._TextExtractor.feed = original
     assert "Kept" in text and "too" in text
     assert "steal" not in text and "p{}" not in text, text
+
+
+# ------------------------------------------------------------- MOSS-Image
+
+
+MOSS_NAMES = (
+    "diffusion_model.layers.0.proj.ffn_up_gate.lora_A.weight",
+    "diffusion_model.layers.0.proj.ffn_up_gate.lora_B.weight",
+)
+
+
+def make_lora(path: Path, names, metadata: dict | None = None) -> None:
+    """A safetensors file with real tensor entries in its header."""
+    header: dict = {"__metadata__": metadata or {}}
+    for index, name in enumerate(names):
+        header[name] = {"dtype": "F16", "shape": [1], "data_offsets": [index * 2, index * 2 + 2]}
+    raw = json.dumps(header).encode()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(struct.pack("<Q", len(raw)) + raw + b"\x00" * (2 * len(names)))
+
+
+def test_several_base_models_can_be_accepted():
+    assert civitai.base_model_choices("Krea 2, MOSS Image") == ["Krea 2", "MOSS Image"]
+    assert civitai.base_model_choices(" ,; ") == []
+    assert civitai.matches_base_model("MOSS Image", "Krea 2, MOSS Image")
+    assert civitai.matches_base_model("Krea2", "Krea 2; MOSS")
+    assert not civitai.matches_base_model("Flux.1 D", "Krea 2, MOSS Image")
+
+    assessment = civitai.assess_base_model({"baseModel": "MOSS Image"}, {}, wanted="Krea 2, MOSS Image", require_explicit=True)
+    assert assessment.allowed and assessment.explicit
+
+
+def test_a_variant_type_is_not_a_conflicting_base_model():
+    # "Standard" says which variant a version is, not which family: a LoRA
+    # labelled "Other" must not be rejected because of it.
+    other = civitai.assess_base_model({"baseModel": "Other", "baseModelType": "Standard"}, {}, wanted="MOSS Image", require_explicit=False)
+    assert other.allowed and not other.explicit, other
+
+    krea = civitai.assess_base_model({"baseModel": "Krea 2", "baseModelType": "Standard"}, {}, wanted="MOSS Image", require_explicit=False)
+    assert not krea.allowed and "Krea 2" in krea.reason and "Standard" not in krea.reason
+
+    assert civitai.family_label({"baseModelType": "Standard"}) == ""
+    assert civitai.family_label({"baseModel": "MOSS Image", "baseModelType": "Standard"}) == "MOSS Image"
+
+
+def test_a_moss_lora_is_recognised_by_its_tensor_names():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "moss.safetensors"
+        make_lora(path, MOSS_NAMES, {"ss_network_module": "networks.lora"})
+        metadata, names = civitai.read_safetensors_header(path)
+        assert metadata == {"ss_network_module": "networks.lora"}
+        assert civitai.local_architecture(names) == "MOSS Image"
+        assert civitai.read_safetensors_metadata(path) == metadata
+
+    assert civitai.local_architecture(["lora_unet_layers_3_proj_ffn_down.lora_up.weight"]) == "MOSS Image"
+    for name in (
+        "diffusion_model.blocks.0.attn.qkv.lora_A.weight",
+        "lora_unet_double_blocks_0_img_attn_proj.lora_down.weight",
+        "transformer.layers.0.attention.qkv.lora_A.weight",
+        "lora_unet_layers_0_feed_forward_w1.lora_down.weight",
+        "head.proj.0.weight",
+    ):
+        assert civitai.local_architecture([name]) == "", name
+
+    # Civitai's label is generic: the names are explicit evidence for MOSS...
+    moss = civitai.assess_base_model({"baseModel": "Other"}, {}, wanted="MOSS Image", require_explicit=True, tensor_names=MOSS_NAMES)
+    assert moss.allowed and moss.explicit and "tensor names" in moss.reason
+    # ...and never let a MOSS LoRA through a filter for something else.
+    krea = civitai.assess_base_model({"baseModel": "Other"}, {}, wanted="Krea 2", require_explicit=True, tensor_names=MOSS_NAMES)
+    assert not krea.allowed
+
+
+def test_a_fetch_uses_the_tensor_names_of_the_file():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        hashing.CACHE = hashing.HashCache(root / "hashes.json")
+        loras = root / "loras"
+        make_lora(loras / "moss.safetensors", MOSS_NAMES)
+        sha = hashlib.sha256((loras / "moss.safetensors").read_bytes()).hexdigest()
+
+        class OtherLabel(StubClient):
+            def version_by_hash(self, sha256):
+                version = super().version_by_hash(sha256)
+                if version is not None:
+                    version["baseModel"] = "Other"
+                return version
+
+        original = civitai.CivitaiClient
+        civitai.CivitaiClient = lambda **kwargs: OtherLabel({sha}, **kwargs)
+        try:
+            report = civitai.scan_folder(
+                loras,
+                root / "out.csv",
+                base_model_filter="MOSS Image",
+                require_explicit_label=True,
+                log=lambda _m: None,
+            )
+        finally:
+            civitai.CivitaiClient = original
+        assert report.resolved == 1, report.counts
+        row = next(iter(csv.DictReader((root / "out.csv").open(encoding="utf-8"))))
+        assert row["status"] == "ok" and "tensor names" in row["note"]
+
+
+def test_a_moss_layout_prompt_is_read_and_kept_verbatim():
+    layout = {
+        "summary": {"caption": "A cozy nook (dusk)", "meta": ["photo"], "canvas": "single"},
+        "items": [
+            {"label": "object", "caption": "armchair", "bbox": [-10, -10, 10, 10]},
+            {"label": "text", "caption": "a sign", "text": "READ", "bbox": [0, 0, 5, 5]},
+        ],
+        "bbox_coord_space": "abs_centralized",
+        "bbox_format": "yxyx",
+    }
+    compiled = layouts.escape_parens(json.dumps(layout, ensure_ascii=False, separators=(",", ":")))
+    assert "\\(dusk\\)" in compiled
+
+    parsed = layouts.parse(compiled)
+    assert parsed.caption == "A cozy nook (dusk)"
+    assert [item.label for item in parsed.items] == ["object", "text"] and parsed.items[1].text == "READ"
+    assert parsed.describe() == "1 object, 1 text"
+    assert layouts.label(compiled, 60).startswith("[layout] A cozy nook")
+    for plain in ("a plain prompt (with parens)", "{not json}", '{"a": 1}', ""):
+        assert layouts.parse(plain) is None, plain
+    assert layouts.label("a plain prompt", 60) == "a plain prompt"
+
+    # the API passing the layout on as an object gets Forge's compiled line back
+    assert civitai.extract_positive_prompt({"meta": {"prompt": layout}}) == compiled
+    assert civitai.extract_positive_prompt({"meta": {"prompt": {"caption": "just (this)"}}}) == "just \\(this\\)"
+    # one that arrives as text is passed through untouched
+    assert civitai.extract_positive_prompt({"meta": {"prompt": compiled}}) == compiled
+    # and an object that is no layout is still ignored
+    assert civitai.extract_positive_prompt({"meta": {"prompt": {"nodes": [1, 2]}}}) == ""
+
+
+def test_moss_is_a_known_preset_without_forge():
+    assert "moss" in preset_folders.FALLBACK_PRESETS and "qwen21" in preset_folders.FALLBACK_PRESETS
+
+
+# ------------------------------------------------------------ the panel
+
+
+MOSS_ROW = {
+    "safetensor_file": "moss/mossLight_v1.safetensors",
+    "sha256": "ab" * 32,
+    "civitai_model_name": "Moss light",
+    "civitai_version_name": "v1.0",
+    "base_model": "MOSS Image",
+    "civitai_creator": "kohaku",
+    "civitai_model_id": "11",
+    "civitai_version_id": "22",
+    "civitai_url": "https://civitai.com/models/11?modelVersionId=22",
+    "trigger_words": "rim light, backlit",
+    "status": "ok",
+    "note": "fine",
+    "model_description": "About it.",
+    "version_description": "First release.",
+    "negative_prompt": "flat",
+    "positive_prompt_1": "a prompt",
+}
+
+
+def test_the_record_carries_the_facts_the_header_shows():
+    record = parse_row(dict(MOSS_ROW), source="civitai-moss.csv", row_number=2)
+    assert (record.version_name, record.base_model, record.creator) == ("v1.0", "MOSS Image", "kohaku")
+    assert (record.model_id, record.version_id, record.status, record.note) == ("11", "22", "ok", "fine")
+    assert record.resolved and record.title == "Moss light"
+    # read for the header, and still listed with the row's other fields
+    assert record.extras["civitai_version_name"] == "v1.0" and record.extras["base_model"] == "MOSS Image"
+
+    unresolved = parse_row(
+        {"safetensor_file": "krea2\\funnyFaces_v1.safetensors", "sha256": "cd" * 32, "status": "not_found"},
+        source="civitai-krea2.csv",
+        row_number=3,
+    )
+    assert not unresolved.resolved
+    assert unresolved.title == "funnyFaces_v1", "the file's own spelling, not the matching key"
+
+
+def test_the_panel_header_and_sidebar_render_the_record():
+    record = parse_row(dict(MOSS_ROW), source="civitai-moss.csv", row_number=2)
+
+    header = render.header_html(records=[record], how="SHA256")
+    assert "Moss light" in header and "Open on Civitai" in header
+    assert all(text in header for text in ("v1.0", "MOSS Image", "by kohaku", "civitai-moss.csv (row 2)"))
+
+    facts = render.facts_html([record], identity={"SHA256": "ab" * 32, "Forge hash": "abcdef123456"}, architecture="MOSS Image")
+    assert "Creator" in facts and "tensor names" in facts and "abcdef123456" in facts
+
+    chips = render.triggers_html(["rim light", "<b>x</b>"], target="t_activation", active={"rim light"})
+    assert 'data-eld-target="t_activation"' in chips and chips.count("eld-word-on") == 1
+    assert "<b>x</b>" not in chips and "&lt;b&gt;x&lt;/b&gt;" in chips
+    assert 'data-eld-action="copy-word"' in render.triggers_html(["a"]), "without a target a chip copies"
+
+    side = render.descriptions_html([(record.title, record.source, record.description, record.version_description)])
+    assert "Description" in side and "Version notes" in side and "eld-clamp" not in side
+    long_text = "word " * 400
+    assert "eld-clamp" in render.text_section_html("Description", long_text) and "Show more" in render.text_section_html("Description", long_text)
+    assert 'data-eld-action="append-negative"' in render.negative_html(record.negative_prompts, tab="img2img")
+    assert render.fields_html([record]).startswith("<details") and "My" not in render.fields_html([record])
+
+    unresolved = parse_row({"safetensor_file": "x.safetensors", "sha256": "cd" * 32, "status": "not_found", "note": "SHA256 not found on Civitai"}, source="c.csv", row_number=2)
+    html = render.header_html(records=[unresolved], how="SHA256")
+    assert "Civitai had nothing" in html and "not_found" in html and "SHA256 not found" in html
+    assert "eld-head-title" not in html, "no title for a LoRA Civitai did not name"
+    assert "No CSV row matched" in render.header_html(records=[], how="")
+
+
+def test_prompt_cards_carry_the_exact_prompt_and_escape_it():
+    layout_prompt = layouts.escape_parens(json.dumps({"summary": {"caption": "Two friends (laughing)"}, "items": []}, separators=(",", ":")))
+    cards = [
+        {"index": 0, "prompt": "a <b>bold</b> (prompt)", "thumb": "", "saved": False, "video": False, "url": "http://x/1.jpeg"},
+        {"index": 1, "prompt": layout_prompt, "thumb": "data:image/webp;base64,AAAA", "saved": True, "video": False, "url": "http://x/2.jpeg"},
+    ]
+    html = render.prompt_cards_html(cards, total=5, tab="txt2img", bridge="pick_id")
+
+    assert html.count('class="eld-card"') == 2
+    assert 'data-eld-bridge="pick_id"' in html and 'data-eld-tab="txt2img"' in html
+    assert "<b>bold</b>" not in html and "&lt;b&gt;bold&lt;/b&gt;" in html
+    assert "Two friends (laughing)" in html and "eld-badge-inline" in html, "a layout shows its caption"
+    assert 'data-eld-action="download"' in html, "with images around, an unsaved card offers its download"
+    assert "…and 3 more" in html
+
+    sources = [html_module.unescape(text) for text in re.findall(r'<textarea class="eld-copy-source"[^>]*>(.*?)</textarea>', html, re.S)]
+    assert sources == [cards[0]["prompt"], layout_prompt], "Copy/Append/Replace act on the prompt exactly"
+
+    # with no image saved anywhere, the cards stay text-only
+    bare = render.prompt_cards_html([dict(cards[0])], total=1, tab="txt2img", bridge="pick_id")
+    assert "eld-card-media" not in bare
+
+
+def test_thumbnails_are_made_once_and_embedded():
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - Pillow ships with the WebUI
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "civitai-1.png"
+        Image.new("RGB", (900, 1200), (10, 20, 30)).save(source)
+        cache = Path(tmp) / "thumbs"
+
+        first = images.thumbnail(source, directory=cache)
+        assert first is not None and first.suffix == ".webp"
+        with Image.open(first) as thumb:
+            assert max(thumb.size) <= images.THUMB_SIZE
+        assert images.thumbnail(source, directory=cache) == first, "made once"
+        assert images.thumbnail_data_uri(source, directory=cache).startswith("data:image/webp;base64,")
+
+        # a replaced image gets a fresh thumbnail
+        Image.new("RGB", (100, 100), (200, 0, 0)).save(source)
+        stamp = time.time() + 5
+        os.utime(source, (stamp, stamp))
+        assert images.thumbnail(source, directory=cache) != first
+
+        (Path(tmp) / "clip.mp4").write_bytes(b"\x00" * 16)
+        assert images.thumbnail(Path(tmp) / "clip.mp4", directory=cache) is None
+        assert images.thumbnail_data_uri(Path(tmp) / "missing.png", directory=cache) == ""
+
+
+def test_the_panel_moves_up_below_the_header_row():
+    try:
+        from extended_lora_details import details_ui
+    except ImportError:  # needs Gradio; exercised inside the WebUI
+        return
+
+    class Block:
+        def __init__(self, parent=None):
+            self.parent = parent
+            self.children = []
+            if parent is not None:
+                parent.children.append(self)
+
+    box = Block()
+    hidden = Block(box)
+    header_row = Block(box)
+    name = Block(Block(header_row))
+    field = Block(box)
+    panel = Block(box)
+
+    editor = types.SimpleNamespace(box=box, edit_name=name)
+    assert details_ui._place_after_header(editor, panel)
+    assert box.children == [hidden, header_row, panel, field]
+
+    # anything unexpected leaves the layout as it is
+    assert not details_ui._place_after_header(types.SimpleNamespace(box=box, edit_name=None), panel)
+    assert not details_ui._place_after_header(types.SimpleNamespace(box=None, edit_name=name), panel)
+    assert box.children == [hidden, header_row, panel, field]
+
+
+def test_the_fetch_button_appears_only_when_it_has_work():
+    try:
+        from extended_lora_details import details_ui
+    except ImportError:  # needs Gradio; exercised inside the WebUI
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "krea2"
+        lora = folder / "x.safetensors"
+        folder.mkdir()
+        lora.write_bytes(b"x")
+
+        plan = details_ui._fetch_plan(str(lora), [])
+        assert plan["folder"] == str(folder) and plan["label"] == "krea2/" and not plan["retry"]
+
+        unresolved = parse_row({"safetensor_file": "x.safetensors", "sha256": "ab" * 32, "status": "not_found"}, source="c.csv", row_number=2)
+        assert details_ui._fetch_plan(str(lora), [unresolved])["retry"], "a miss is retried"
+
+        resolved = parse_row(dict(MOSS_ROW), source="c.csv", row_number=2)
+        assert details_ui._fetch_plan(str(lora), [resolved]) == {}
+        assert details_ui._fetch_plan("", []) == {}
 
 
 def main() -> int:

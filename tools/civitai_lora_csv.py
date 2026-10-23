@@ -16,9 +16,10 @@ Columns
 -------
 ``safetensor_file``, ``sha256``, ``addnet_hash``, ``civitai_model_name``,
 ``civitai_model_id``, ``civitai_version_id``, ``civitai_version_name``,
-``base_model``, ``civitai_url``, ``trigger_words``, ``status``, ``note``,
-``model_description``, ``version_description``, ``positive_prompt_1..N`` with the
-URL and id of the gallery image each prompt came from.
+``base_model``, ``civitai_creator``, ``civitai_url``, ``trigger_words``,
+``status``, ``note``, ``model_description``, ``version_description``,
+``positive_prompt_1..N`` with the URL and id of the gallery image each prompt
+came from.
 
 Descriptions are converted from Civitai's HTML to plain text and are collected by
 default; ``--no-descriptions`` turns that off. No image is ever downloaded here -
@@ -72,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--base-model",
         default="",
-        help='only accept this base model, e.g. "Krea 2"; empty accepts any exact hash match',
+        help='only accept these base models, e.g. "Krea 2" or "Krea 2, MOSS Image"; empty accepts any exact hash match',
     )
     parser.add_argument(
         "--require-base-model-label",
