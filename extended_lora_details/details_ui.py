@@ -1,10 +1,17 @@
-"""The panel appended to Forge's LoRA "edit metadata" dialog.
+"""The panel added to Forge's LoRA "edit metadata" dialog.
 
 The dialog is built by ``LoraUserMetadataEditor.create_editor()``, which calls
 ``create_default_editor_elems()`` → the LoRA fields → ``create_default_buttons()``.
-Patching ``create_default_buttons`` therefore lets us insert a panel *below the
-existing fields but above Cancel/Save*, without rewriting any upstream code and
-without touching the checkpoint or embedding editors.
+Patching ``create_default_buttons`` therefore lets us add a panel without
+rewriting any upstream code and without touching the checkpoint or embedding
+editors. It is created there - below the stock fields - and then moved up to sit
+right under the dialog's header row, so what Civitai knows about the LoRA comes
+before the fields you edit (a setting puts it back at the bottom).
+
+The layout follows the Inspect view of the Wan2GP LoRA browser: a title strip; a
+sidebar with the facts, trigger words, description and version notes; and the
+gallery prompts - the selected one large, beside its image, and every one of them
+as a card.
 
 Population is wired as a **second** listener on the same ``button_edit`` click
 that upstream already uses, so the original outputs are untouched: if anything
@@ -15,15 +22,20 @@ from __future__ import annotations
 
 import json
 import os
-import re
+from pathlib import Path
 
 import gradio as gr
 
-from . import hashing, images, jobs, render
-from .common import lora_directories, normalize_path, opt, report, truncate
+from . import civitai, hashing, images, jobs, layouts, render, state
+from .common import SAFETENSORS_EXTENSIONS, lora_directories, normalize_path, opt, report
 from .library import get_library
 
-TRIGGER_SPLIT_RE = re.compile(r" *, *")
+# Stock fields the stylesheet arranges more compactly when the panel is present:
+# the weight's class finds the row it shares with the activation text and the
+# negative prompt. Only a class is added; the components are not touched.
+STOCK_FIELD_CLASSES = {
+    "slider_preferred_weight": "eld-stock-weight",
+}
 
 
 # ------------------------------------------------------------------ gathering
@@ -94,6 +106,50 @@ def _resolve_sha256(filename: str) -> tuple[str, bool]:
     return value, bool(value)
 
 
+_ARCHITECTURES: dict[tuple[str, int, int], str] = {}
+
+
+def _architecture(filename: str) -> str:
+    """What the file's tensor names say it is - read from its header only."""
+    if not filename or not filename.lower().endswith(SAFETENSORS_EXTENSIONS):
+        return ""
+    try:
+        info = os.stat(filename)
+    except OSError:
+        return ""
+    key = (os.path.abspath(filename), info.st_size, info.st_mtime_ns)
+    if key not in _ARCHITECTURES:
+        if len(_ARCHITECTURES) > 4096:
+            _ARCHITECTURES.clear()
+        _metadata, names = civitai.read_safetensors_header(Path(filename))
+        _ARCHITECTURES[key] = civitai.local_architecture(names)
+    return _ARCHITECTURES[key]
+
+
+def _fetch_plan(filename: str, records) -> dict:
+    """What the panel's fetch button would do, or ``{}`` when it has nothing to do.
+
+    A LoRA the library has never seen is fetched with its folder; one Civitai
+    could not resolve before is retried. A resolved one needs no button.
+    """
+    folder = os.path.dirname(os.path.abspath(filename)) if filename else ""
+    if not folder or not os.path.isdir(folder):
+        return {}
+    if records and any(record.resolved for record in records):
+        return {}
+
+    label = os.path.basename(folder) or folder
+    for root in lora_directories():
+        try:
+            if os.path.commonpath([folder, root]) == root:
+                relative = os.path.relpath(folder, root)
+                label = os.path.basename(root) if relative == "." else relative.replace(os.sep, "/")
+                break
+        except ValueError:
+            continue
+    return {"folder": folder, "label": label + "/", "retry": bool(records)}
+
+
 def gather(page, name: str) -> dict:
     """Everything the panel needs for one card, as plain data."""
     item = (page.items.get(name, {}) if page is not None else {}) or {}
@@ -117,6 +173,7 @@ def gather(page, name: str) -> dict:
     prompt_sources: list[str] = []
     triggers: list[tuple[str, str]] = []
     descriptions: list[tuple[str, str, str, str]] = []
+    negatives: list[str] = []
     seen_triggers: set[str] = set()
     for record in records:
         if record.has_description:
@@ -130,11 +187,16 @@ def gather(page, name: str) -> dict:
             if word not in seen_triggers:
                 seen_triggers.add(word)
                 triggers.append((word, record.source))
+        for negative in record.negative_prompts:
+            if negative not in negatives:
+                negatives.append(negative)
 
     identity = {
         "SHA256": sha256 or ("not computed" if filename else ""),
         "Forge hash": item.get("shorthash") or "",
     }
+
+    user_metadata = item.get("user_metadata") or {}
 
     return {
         "records": records,
@@ -144,9 +206,13 @@ def gather(page, name: str) -> dict:
         "prompt_images": prompt_images,
         "prompt_sources": prompt_sources,
         "triggers": triggers,
+        "negatives": negatives,
         "identity": identity,
         "computed": computed,
         "filename": filename,
+        "architecture": _architecture(filename),
+        "activation": str(user_metadata.get("activation text", "") or ""),
+        "fetch": _fetch_plan(filename, records),
     }
 
 
@@ -155,7 +221,7 @@ def gather(page, name: str) -> dict:
 
 def _prompt_choices(prompts: list[str]) -> list[tuple[str, int]]:
     width = max(1, int(opt("eld_prompt_label_width", 90)))
-    return [(f"{index + 1}. {truncate(prompt, width)}", index) for index, prompt in enumerate(prompts)]
+    return [(f"{index + 1}. {layouts.label(prompt, width)}", index) for index, prompt in enumerate(prompts)]
 
 
 def _clamp(index, total: int) -> int:
@@ -182,22 +248,71 @@ def _image_state(prompt_images: list, index: int):
         return (
             render.notice("This prompt has no image URL in the library. Re-run a Civitai fetch to pick one up.", kind="empty"),
             gr.update(value=None, visible=False),
-            gr.update(interactive=False),
+            gr.update(interactive=False, value="Download this image"),
         )
 
     local = images.find_local(url, image_id)
     if local is not None:
+        done = gr.update(interactive=False, value="Downloaded", variant="secondary")
+        if images.is_video(local):
+            return (
+                render.image_status_html(downloaded=True, name=local.name, url=url),
+                gr.update(value=None, visible=False),
+                done,
+            )
         return (
             render.image_status_html(downloaded=True, name=local.name, url=url),
             gr.update(value=str(local), visible=True),
-            gr.update(interactive=False, value="Downloaded"),
+            done,
         )
 
     return (
         render.image_status_html(downloaded=False, name="", url=url),
         gr.update(value=None, visible=False),
-        gr.update(interactive=True, value="Download this image"),
+        gr.update(interactive=True, value="Download this image", variant="primary"),
     )
+
+
+def _cards(prompts: list[str], prompt_images: list) -> tuple[list[dict], int]:
+    """One entry per card shown, plus how many prompts have their image saved."""
+    limit = max(1, int(opt("eld_prompt_list_limit", 50)))
+    cards: list[dict] = []
+    saved = 0
+    for index, prompt in enumerate(prompts):
+        url, image_id = prompt_images[index] if index < len(prompt_images) else ("", "")
+        local = images.find_local(url, image_id) if url else None
+        if local is not None:
+            saved += 1
+        if index >= limit:
+            continue
+        video = local is not None and images.is_video(local)
+        cards.append(
+            {
+                "index": index,
+                "prompt": prompt,
+                "url": url,
+                "saved": local is not None,
+                "video": video,
+                "thumb": images.thumbnail_data_uri(local) if local is not None and not video else "",
+            }
+        )
+    return cards, saved
+
+
+def _gallery(prompts: list[str], prompt_images: list, *, tabname: str, bridge: str) -> tuple[str, str]:
+    """The gallery's heading and its cards, both of which change on a download."""
+    cards, saved = _cards(prompts, prompt_images)
+    return (
+        render.prompts_head_html(len(prompts), saved),
+        render.prompt_cards_html(cards, total=len(prompts), tab=tabname, bridge=bridge),
+    )
+
+
+def _source_for(sources: list, index: int) -> str:
+    """Which CSV a prompt came from - worth saying only when there are several."""
+    if len(set(sources or [])) <= 1 or not (0 <= index < len(sources)):
+        return ""
+    return f"from {sources[index]}"
 
 
 def _raw_json(records) -> str:
@@ -217,186 +332,290 @@ def _raw_json(records) -> str:
         return "{}"
 
 
+def _activation_target(editor) -> str:
+    """The element id of the dialog's activation text box, giving it one if it
+    has none, so the trigger-word chips can edit it from the page."""
+    activation = getattr(editor, "edit_activation_text", None)
+    if activation is None:
+        return ""
+    if not getattr(activation, "elem_id", None):
+        activation.elem_id = f"{getattr(editor, 'id_part', 'eld')}_activation_text"
+    return str(activation.elem_id)
+
+
+def _tag_stock_fields(editor) -> None:
+    for attribute, css_class in STOCK_FIELD_CLASSES.items():
+        component = getattr(editor, attribute, None)
+        if component is None:
+            continue
+        classes = getattr(component, "elem_classes", None) or []
+        if isinstance(classes, str):
+            classes = [classes]
+        if css_class not in classes:
+            component.elem_classes = [*classes, css_class]
+
+
+def _place_after_header(editor, panel) -> bool:
+    """Move the panel up to sit right below the dialog's header row - the row
+    with the name, description, file table and preview."""
+    box = getattr(editor, "box", None)
+    children = getattr(box, "children", None)
+    if not isinstance(children, list) or panel not in children:
+        return False
+
+    node = getattr(editor, "edit_name", None)
+    while node is not None and getattr(node, "parent", None) is not box:
+        node = getattr(node, "parent", None)
+    if node is None or node not in children:
+        return False
+
+    children.remove(panel)
+    children.insert(children.index(node) + 1, panel)
+    return True
+
+
+def _api_key() -> str:
+    """The key the dialog's fetch uses: the remembered one, the setting, the
+    environment - the same order the fetch tab fills its field in."""
+    return (
+        state.remembered_api_key()
+        or str(opt("eld_civitai_api_key", "") or "").strip()
+        or os.environ.get("CIVITAI_API_KEY", "")
+    )
+
+
 # ---------------------------------------------------------------- the panel
 
 
 def build_panel(editor) -> None:
     """Create the panel and wire it into ``editor.button_edit``."""
     open_by_default = bool(opt("eld_open_by_default", False))
-    list_limit = max(1, int(opt("eld_prompt_list_limit", 50)))
     tabname = getattr(editor, "tabname", "txt2img")
+    id_part = getattr(editor, "id_part", f"{tabname}_lora_edit_user_metadata")
+    bridge = f"{id_part}_eld_pick"
+    target = _activation_target(editor)
 
     prompts_state = gr.State([])
     images_state = gr.State([])
+    sources_state = gr.State([])
+    fetch_state = gr.State({})
 
     with gr.Accordion("Extended details", open=open_by_default, elem_classes=["eld-panel"]) as panel:
-        summary = gr.HTML(elem_classes=["eld-summary"])
+        header = gr.HTML(elem_classes=["eld-header"])
 
-        with gr.Tabs(elem_classes=["eld-tabs"]):
-            with gr.TabItem("Overview", elem_classes=["eld-tab"]):
-                overview = gr.HTML(elem_classes=["eld-overview"])
+        with gr.Row(equal_height=False, elem_classes=["eld-body"]):
+            # ---------------------------------------------------- sidebar
+            with gr.Column(scale=4, min_width=280, elem_classes=["eld-side"]):
+                facts = gr.HTML(elem_classes=["eld-facts-html"])
+                with gr.Column(visible=False, elem_classes=["eld-fetch"]) as fetch_group:
+                    fetch_button = gr.Button("Fetch from Civitai", size="sm", variant="primary")
+                    fetch_note = gr.HTML(elem_classes=["eld-fetch-note"])
+                side = gr.HTML(elem_classes=["eld-side-html"])
 
-            with gr.TabItem("Description", elem_classes=["eld-tab"]):
-                description = gr.HTML(elem_classes=["eld-description-block"])
-
-            with gr.TabItem("Trigger words", elem_classes=["eld-tab"]):
-                trigger_tags = gr.HighlightedText(
-                    label="From the library — click a word to add it to the activation text",
-                    visible=False,
-                )
-                trigger_text = gr.Textbox(
-                    label="All trigger words",
-                    lines=2,
-                    max_lines=4,
-                    interactive=False,
-                    show_copy_button=True,
-                )
-                with gr.Row(elem_classes=["eld-actions"]):
-                    use_triggers = gr.Button("Use as activation text")
-                    append_triggers = gr.Button("Append to activation text")
-
-            with gr.TabItem("Prompts", elem_classes=["eld-tab"]):
-                prompt_meta = gr.HTML(elem_classes=["eld-prompt-meta"])
-
-                prompt_selector = gr.Dropdown(
-                    label="Prompt",
-                    choices=[],
-                    value=None,
-                    interactive=True,
-                    filterable=True,
-                )
-                with gr.Row(elem_classes=["eld-actions", "eld-stepper"]):
-                    previous_button = gr.Button("‹  Previous")
-                    next_button = gr.Button("Next  ›")
-
-                prompt_box = gr.Textbox(
-                    label="Positive prompt",
-                    lines=8,
-                    max_lines=20,
-                    interactive=False,
-                    show_copy_button=True,
-                )
-                with gr.Row(elem_classes=["eld-actions"]):
-                    append_prompt = gr.Button("Append to prompt")
-                    replace_prompt = gr.Button("Replace prompt", variant="primary")
-
-                with gr.Group(elem_classes=["eld-image-block"]):
-                    image_status = gr.HTML(elem_classes=["eld-image-status"])
-                    with gr.Row(elem_classes=["eld-actions"]):
-                        download_image = gr.Button("Download this image", variant="primary")
-                        download_all_images = gr.Button("Download all images for this LoRA")
-                    image_preview = gr.Image(
-                        label="Gallery image",
-                        visible=False,
-                        interactive=False,
-                        show_download_button=True,
-                        elem_classes=["eld-image-preview"],
+            # ---------------------------------------------- gallery prompts
+            with gr.Column(scale=7, min_width=480, visible=False, elem_classes=["eld-main"]) as main:
+                prompts_head = gr.HTML(elem_classes=["eld-prompts-head"])
+                with gr.Row(equal_height=True, elem_classes=["eld-picker"]):
+                    prompt_selector = gr.Dropdown(
+                        label="Prompt",
+                        show_label=False,
+                        container=False,
+                        choices=[],
+                        value=None,
+                        interactive=True,
+                        filterable=True,
+                        scale=10,
+                        min_width=160,
+                        elem_classes=["eld-selector"],
                     )
+                    previous_button = gr.Button("‹", size="sm", scale=0, min_width=48, elem_classes=["eld-step"])
+                    next_button = gr.Button("›", size="sm", scale=0, min_width=48, elem_classes=["eld-step"])
 
-                with gr.Accordion("All prompts", open=False, elem_classes=["eld-all-prompts"]):
-                    prompt_list = gr.HTML()
+                with gr.Row(equal_height=False, elem_classes=["eld-viewer"]):
+                    with gr.Column(scale=4, min_width=220, elem_classes=["eld-viewer-media"]):
+                        image_preview = gr.Image(
+                            label="Gallery image",
+                            show_label=False,
+                            visible=False,
+                            interactive=False,
+                            show_download_button=True,
+                            elem_classes=["eld-image-preview"],
+                        )
+                        image_status = gr.HTML(elem_classes=["eld-image-status"])
+                        with gr.Row(elem_classes=["eld-actions"]):
+                            download_image = gr.Button("Download this image", size="sm", variant="primary")
+                            download_all_images = gr.Button("Download all images", size="sm")
 
-            with gr.TabItem("Raw CSV row", elem_classes=["eld-tab"]):
-                raw_row = gr.Code(label="Matched row(s)", language="json", interactive=False)
+                    with gr.Column(scale=5, min_width=260, elem_classes=["eld-viewer-text"]):
+                        prompt_meta = gr.HTML(elem_classes=["eld-prompt-meta"])
+                        prompt_box = gr.Textbox(
+                            label="Positive prompt",
+                            show_label=False,
+                            lines=7,
+                            max_lines=18,
+                            interactive=False,
+                            show_copy_button=True,
+                            elem_classes=["eld-prompt-box"],
+                        )
+                        with gr.Row(elem_classes=["eld-actions"]):
+                            append_prompt = gr.Button("Append to prompt", size="sm")
+                            replace_prompt = gr.Button("Replace prompt", size="sm", variant="primary")
+
+                cards = gr.HTML(elem_classes=["eld-cards-html"])
+
+        # The cards' "view" and "download" reach Python through these two, the
+        # same way Forge's own cards open this dialog.
+        pick_text = gr.Textbox(visible=False, elem_id=bridge)
+        pick_button = gr.Button(visible=False, elem_id=f"{bridge}_button")
 
     # ------------------------------------------------------------- populate
 
-    def populate(name):
-        blank = [
+    outputs = [
+        panel,
+        header,
+        facts,
+        fetch_group,
+        fetch_button,
+        fetch_note,
+        side,
+        main,
+        prompts_head,
+        prompt_selector,
+        prompt_meta,
+        prompt_box,
+        image_status,
+        image_preview,
+        download_image,
+        download_all_images,
+        cards,
+        prompts_state,
+        images_state,
+        sources_state,
+        fetch_state,
+    ]
+
+    def blank(message: str = "") -> list:
+        return [
             gr.update(label="Extended details", open=open_by_default),
+            message,
+            "",
+            gr.update(visible=False),
+            gr.update(),
             "",
             "",
-            "",
-            gr.update(value=[], visible=False),
+            gr.update(visible=False),
             "",
             gr.update(choices=[], value=None),
             "",
             "",
             "",
-            "{}",
-            [],
-            [],
-            "",
             gr.update(value=None, visible=False),
             gr.update(interactive=False),
             gr.update(interactive=False),
+            "",
+            [],
+            [],
+            [],
+            {},
         ]
 
+    def populate(name):
         try:
             data = gather(editor.page, name)
         except Exception:
             report(f'could not gather extended details for "{name}"')
-            blank[1] = render.notice("Extended details could not be loaded — see the console for details.", kind="error")
-            return blank
+            return blank(render.notice("Extended details could not be loaded — see the console for details.", kind="error"))
 
         records = data["records"]
         prompts = data["prompts"]
         triggers = data["triggers"]
+        prompt_images = data["prompt_images"]
+        sources = data["prompt_sources"]
+        plan = data["fetch"]
 
-        label = "Extended details"
         if records:
-            pieces = [f"{len(records)} row{'s' if len(records) != 1 else ''}"]
+            pieces = []
             if triggers:
                 pieces.append(f"{len(triggers)} trigger word{'s' if len(triggers) != 1 else ''}")
             if prompts:
                 pieces.append(f"{len(prompts)} prompt{'s' if len(prompts) != 1 else ''}")
             if data["descriptions"]:
                 pieces.append("description")
-            label = "Extended details — " + ", ".join(pieces)
+            resolved = [record for record in records if record.resolved]
+            label = f"Extended details — {resolved[0].title}" if resolved else "Extended details — no Civitai details yet"
+            if pieces:
+                label += " · " + ", ".join(pieces)
         else:
             label = "Extended details — no library match"
 
-        choices = _prompt_choices(prompts)
-        first_prompt = prompts[0] if prompts else ""
         should_open = open_by_default or (bool(records) and bool(opt("eld_open_on_match", False)))
 
-        prompt_images = data["prompt_images"]
-        status, preview, download_button = _image_state(prompt_images, 0) if prompts else ("", gr.update(value=None, visible=False), gr.update(interactive=False))
+        active = {piece.strip() for piece in data["activation"].split(",") if piece.strip()}
+        texts = render.descriptions_html(data["descriptions"])
+        if not texts and any(record.resolved for record in records):
+            texts = render.notice(
+                "No description in the library yet. A fetch with <b>fill in missing text details</b> ticked "
+                "picks it up.",
+                kind="empty",
+            )
+        side_html = "".join(
+            [
+                render.triggers_html([word for word, _ in triggers], target=target, active=active),
+                texts,
+                render.negative_html(data["negatives"], tab=tabname),
+                render.fields_html(records),
+                render.raw_html(_raw_json(records)),
+            ]
+        )
+
+        if plan:
+            fetch_label = "Retry on Civitai" if plan["retry"] else "Fetch from Civitai"
+            what = (
+                f"Looks this LoRA up again, with the others in <code>{render.escape(plan['label'])}</code> "
+                "Civitai could not resolve before."
+                if plan["retry"]
+                else f"Looks up the LoRAs in <code>{render.escape(plan['label'])}</code> the library does not have "
+                "yet, this one included."
+            )
+            note = f'<div class="eld-muted">{what} It runs in the background; reopen this dialog when it is done.</div>'
+        else:
+            fetch_label, note = "Fetch from Civitai", ""
+
+        choices = _prompt_choices(prompts)
+        if prompts:
+            status, preview, download_button = _image_state(prompt_images, 0)
+        else:
+            status, preview, download_button = "", gr.update(value=None, visible=False), gr.update(interactive=False)
         downloadable = sum(1 for url, _ in prompt_images if url)
         bulk = gr.update(
             interactive=bool(downloadable),
             value=f"Download all {downloadable} images" if downloadable else "No images in the library",
         )
+        head, gallery = _gallery(prompts, prompt_images, tabname=tabname, bridge=bridge)
 
         return [
             gr.update(label=label, open=should_open),
-            render.summary_html(matched=bool(records), how=data["how"], records=records, identity=data["identity"]),
-            render.overview_html(records),
-            render.description_html(data["descriptions"]),
-            gr.update(value=list(triggers), visible=bool(triggers)),
-            ", ".join(word for word, _ in triggers),
+            render.header_html(records=records, how=data["how"]),
+            render.facts_html(records, identity=data["identity"], architecture=data["architecture"]),
+            gr.update(visible=bool(plan)),
+            gr.update(value=fetch_label, interactive=bool(plan)),
+            note,
+            side_html,
+            gr.update(visible=bool(prompts)),
+            head,
             gr.update(choices=choices, value=0 if choices else None),
-            first_prompt,
-            render.prompt_meta_html(len(prompts), 0, data["prompt_sources"][:1]),
-            render.prompt_list_html(prompts, limit=list_limit),
-            _raw_json(records),
-            prompts,
-            prompt_images,
+            render.prompt_meta_html(len(prompts), 0, _source_for(sources, 0), layouts.parse(prompts[0]) if prompts else None),
+            prompts[0] if prompts else "",
             status,
             preview,
             download_button,
             bulk,
+            gallery,
+            prompts,
+            prompt_images,
+            sources,
+            plan,
         ]
-
-    outputs = [
-        panel,
-        summary,
-        overview,
-        description,
-        trigger_tags,
-        trigger_text,
-        prompt_selector,
-        prompt_box,
-        prompt_meta,
-        prompt_list,
-        raw_row,
-        prompts_state,
-        images_state,
-        image_status,
-        image_preview,
-        download_image,
-        download_all_images,
-    ]
 
     # A separate listener on the existing trigger: the stock dialog keeps working
     # even if this one raises.
@@ -404,131 +623,173 @@ def build_panel(editor) -> None:
 
     # ------------------------------------------------------------ navigation
 
-    def select_prompt(index, prompts, prompt_images):
-        prompts = prompts or []
-        position = _clamp(index, len(prompts))
-        text = prompts[position] if prompts else ""
+    def viewer(prompts, prompt_images, sources, position):
         status, preview, button = _image_state(prompt_images or [], position)
-        return text, render.prompt_meta_html(len(prompts), position, []), status, preview, button
+        text = prompts[position] if prompts else ""
+        meta = render.prompt_meta_html(len(prompts), position, _source_for(sources, position), layouts.parse(text) if text else None)
+        return text, meta, status, preview, button
+
+    def select_prompt(index, prompts, prompt_images, sources):
+        prompts = prompts or []
+        return viewer(prompts, prompt_images, sources, _clamp(index, len(prompts)))
 
     navigation_outputs = [prompt_box, prompt_meta, image_status, image_preview, download_image]
 
     prompt_selector.change(
         fn=select_prompt,
-        inputs=[prompt_selector, prompts_state, images_state],
+        inputs=[prompt_selector, prompts_state, images_state, sources_state],
         outputs=navigation_outputs,
         show_progress=False,
     )
 
-    def step(index, prompts, prompt_images, delta):
+    def step(index, prompts, prompt_images, sources, delta):
         prompts = prompts or []
         if not prompts:
-            return (gr.update(), "", render.prompt_meta_html(0, 0, []), "", gr.update(visible=False), gr.update(interactive=False))
+            return (gr.update(), "", render.prompt_meta_html(0, 0), "", gr.update(visible=False), gr.update(interactive=False))
         position = (_clamp(index, len(prompts)) + delta) % len(prompts)
-        status, preview, button = _image_state(prompt_images or [], position)
-        return position, prompts[position], render.prompt_meta_html(len(prompts), position, []), status, preview, button
+        return (position, *viewer(prompts, prompt_images, sources, position))
 
     previous_button.click(
-        fn=lambda index, prompts, prompt_images: step(index, prompts, prompt_images, -1),
-        inputs=[prompt_selector, prompts_state, images_state],
+        fn=lambda index, prompts, prompt_images, sources: step(index, prompts, prompt_images, sources, -1),
+        inputs=[prompt_selector, prompts_state, images_state, sources_state],
         outputs=[prompt_selector, *navigation_outputs],
         show_progress=False,
     )
     next_button.click(
-        fn=lambda index, prompts, prompt_images: step(index, prompts, prompt_images, 1),
-        inputs=[prompt_selector, prompts_state, images_state],
+        fn=lambda index, prompts, prompt_images, sources: step(index, prompts, prompt_images, sources, 1),
+        inputs=[prompt_selector, prompts_state, images_state, sources_state],
         outputs=[prompt_selector, *navigation_outputs],
         show_progress=False,
     )
 
     # ------------------------------------------------------- image downloads
 
-    def fetch_current_image(index, prompt_images):
-        prompt_images = prompt_images or []
-        position = _clamp(index, len(prompt_images))
-        if not (0 <= position < len(prompt_images)):
-            return "", gr.update(visible=False), gr.update(interactive=False)
-
+    def download_at(position, prompt_images):
+        """Download one prompt's image; returns an error notice, or ``""``."""
         url, image_id = prompt_images[position]
         try:
             result = images.download(url, image_id)
         except Exception as exc:  # noqa: BLE001 - surfaced next to the button
             report(f"could not download {url}")
-            return (
-                render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error"),
-                gr.update(visible=False),
-                gr.update(interactive=True),
-            )
+            return render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error")
+        return "" if result.ok else render.notice(render.escape(result.message), kind="error")
 
+    def fetch_current_image(index, prompts, prompt_images):
+        prompts = prompts or []
+        prompt_images = prompt_images or []
+        position = _clamp(index, len(prompt_images))
+        if not (0 <= position < len(prompt_images)):
+            return "", gr.update(visible=False), gr.update(interactive=False), gr.update(), gr.update()
+
+        problem = download_at(position, prompt_images)
         status, preview, button = _image_state(prompt_images, position)
-        if not result.ok:
-            status = render.notice(render.escape(result.message), kind="error") + status
-        return status, preview, button
+        head, gallery = _gallery(prompts, prompt_images, tabname=tabname, bridge=bridge)
+        return problem + status, preview, button, head, gallery
 
     download_image.click(
         fn=fetch_current_image,
-        inputs=[prompt_selector, images_state],
-        outputs=[image_status, image_preview, download_image],
+        inputs=[prompt_selector, prompts_state, images_state],
+        outputs=[image_status, image_preview, download_image, prompts_head, cards],
     )
 
-    def fetch_all_images(index, prompt_images, name):
+    def fetch_all_images(prompt_images, name):
         pairs = [(url, image_id) for url, image_id in (prompt_images or []) if url]
         if not pairs:
-            return render.notice("There are no image URLs to download.", kind="empty"), gr.update(), gr.update()
+            return render.notice("There are no image URLs to download.", kind="empty")
 
         try:
             job = jobs.submit_image_downloads(pairs, label=str(name or ""))
         except Exception as exc:  # noqa: BLE001
             report("could not queue the image downloads")
-            return render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error"), gr.update(), gr.update()
+            return render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error")
 
-        message = render.notice(
+        return render.notice(
             f"Queued job #{job.id} for {len(pairs)} image(s). "
             "Progress is on the <b>Extended LoRA Details</b> tab; reopen this dialog to see them.",
             kind="ok",
         )
-        return message, gr.update(), gr.update()
 
     download_all_images.click(
         fn=fetch_all_images,
-        inputs=[prompt_selector, images_state, editor.edit_name_input],
-        outputs=[image_status, image_preview, download_image],
+        inputs=[images_state, editor.edit_name_input],
+        outputs=[image_status],
         show_progress=False,
     )
 
-    # -------------------------------------------------------- trigger words
+    # ------------------------------------------------- the cards' actions
 
-    activation = getattr(editor, "edit_activation_text", None)
-    if activation is not None:
+    def pick(value, selected, prompts, prompt_images):
+        """``view:<n>`` shows prompt n above; ``download:<n>`` saves its image."""
+        prompts = prompts or []
+        prompt_images = prompt_images or []
+        nothing = (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+        action, _, raw_index = str(value or "").partition(":")
+        try:
+            position = int(raw_index)
+        except ValueError:
+            return nothing
+        if not (0 <= position < len(prompts)):
+            return nothing
 
-        def add_tag(current, event: gr.SelectData):
-            word = event.value[0] if isinstance(event.value, (list, tuple)) else event.value
-            words = [piece for piece in TRIGGER_SPLIT_RE.split(current or "") if piece.strip()]
-            if word in words:
-                return ", ".join(piece for piece in words if piece != word)
-            return ", ".join([*words, word])
+        if action == "view":
+            return (position, gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
 
-        trigger_tags.select(fn=add_tag, inputs=[activation], outputs=[activation], show_progress=False)
+        if action == "download" and position < len(prompt_images):
+            problem = download_at(position, prompt_images)
+            head, gallery = _gallery(prompts, prompt_images, tabname=tabname, bridge=bridge)
+            if _clamp(selected, len(prompts)) == position:
+                status, preview, button = _image_state(prompt_images, position)
+                return (gr.update(), problem + status, preview, button, head, gallery)
+            note = problem or gr.update()
+            return (gr.update(), note, gr.update(), gr.update(), head, gallery)
 
-        use_triggers.click(fn=lambda text: text or "", inputs=[trigger_text], outputs=[activation], show_progress=False)
+        return nothing
 
-        def append_to_activation(current, text):
-            words = [piece for piece in TRIGGER_SPLIT_RE.split(current or "") if piece.strip()]
-            for word in TRIGGER_SPLIT_RE.split(text or ""):
-                if word.strip() and word not in words:
-                    words.append(word)
-            return ", ".join(words)
+    pick_button.click(
+        fn=pick,
+        inputs=[pick_text, prompt_selector, prompts_state, images_state],
+        outputs=[prompt_selector, image_status, image_preview, download_image, prompts_head, cards],
+        show_progress=False,
+    )
 
-        append_triggers.click(
-            fn=append_to_activation,
-            inputs=[activation, trigger_text],
-            outputs=[activation],
-            show_progress=False,
+    # ------------------------------------------------------ fetch from here
+
+    def fetch_folder(plan):
+        plan = plan or {}
+        folder = plan.get("folder") or ""
+        if not folder or not os.path.isdir(folder):
+            return render.notice("This LoRA's folder could not be found.", kind="error"), gr.update()
+
+        key = _api_key()
+        try:
+            job = jobs.submit_scan(
+                folder,
+                api_key=key,
+                recursive=False,
+                incremental=True,
+                retry_unresolved=bool(plan.get("retry")) or bool(opt("eld_retry_unresolved", False)),
+                backfill_text=bool(opt("eld_backfill_text", True)),
+                fetch_descriptions=bool(opt("eld_fetch_descriptions", True)),
+                base_model_filter=str(opt("eld_base_model_filter", "") or "").strip(),
+                require_explicit_label=bool(opt("eld_require_explicit_label", False)),
+                request_delay=float(opt("eld_request_delay", 0.15)),
+                timeout=float(opt("eld_request_timeout", 30.0)),
+                max_images=int(opt("eld_max_images", 0)),
+                keep_existing_rows=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            report("could not queue the fetch")
+            return render.notice(render.escape(f"{type(exc).__name__}: {exc}"), kind="error"), gr.update()
+
+        key_note = "" if key else " No API key is set, so only public models are found."
+        message = render.notice(
+            f"Queued job #{job.id} for <code>{render.escape(plan.get('label') or folder)}</code>. Progress is on the "
+            f"<b>Extended LoRA Details</b> tab; reopen this dialog when it has finished.{render.escape(key_note)}",
+            kind="ok",
         )
-    else:
-        # Non-LoRA editors have no activation text field; hide the buttons.
-        use_triggers.visible = False
-        append_triggers.visible = False
+        return message, gr.update(interactive=False, value="Fetch queued")
+
+    fetch_button.click(fn=fetch_folder, inputs=[fetch_state], outputs=[fetch_note, fetch_button], show_progress=False)
 
     # -------------------------------------------------------- prompt actions
 
@@ -546,3 +807,12 @@ def build_panel(editor) -> None:
         outputs=[],
         show_progress=False,
     )
+
+    # ------------------------------------------------------------- placement
+
+    _tag_stock_fields(editor)
+    if opt("eld_panel_first", True):
+        try:
+            _place_after_header(editor, panel)
+        except Exception:
+            report("could not move the extended details panel up; it stays at the bottom")

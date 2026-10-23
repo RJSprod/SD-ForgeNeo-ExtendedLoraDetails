@@ -6,8 +6,15 @@ card's own details dialog** — matched to the file by its SHA256 hash.
 
 It extends the existing dialog rather than replacing it: the stock fields
 (description, preset, training tags, activation text, preferred weight, notes)
-are untouched, and a collapsible **Extended details** panel is added below them —
-model description, trigger words and gallery prompts, straight from Civitai.
+all stay, and a collapsible **Extended details** panel is added right under the
+dialog's header — laid out like the *Inspect* view of the
+[Wan2GP LoRA browser](https://github.com/RJSprod/Wan2GP_lora): the model's name,
+version, base model and creator up top; trigger words, description and version
+notes in a sidebar; and the gallery prompts beside them, the selected one large
+next to its image and every one of them as a card.
+
+Works for every model family Forge Neo loads — Krea 2, Flux, Z-Image, Qwen,
+**MOSS-Image** and the rest — since a LoRA is identified by its own checksum.
 
 <!-- ------------------------------------------------------------------ -->
 
@@ -15,13 +22,14 @@ model description, trigger words and gallery prompts, straight from Civitai.
 
 * **Hash → CSV lookup.** Every LoRA is identified by the SHA256 of the whole
   file. That digest is looked up in a library of user-supplied CSVs.
-* **Extends the details view.** The matched rows are rendered in a collapsible,
-  tabbed panel inside the *edit metadata* dialog, so large libraries stay
-  navigable: **Overview**, **Description**, **Trigger words**, **Prompts** and
-  **Raw CSV row**.
+* **Extends the details view, Civitai first.** The matched rows are shown in a
+  panel inside the *edit metadata* dialog, placed above the fields you edit: a
+  title strip, a sidebar with the facts, trigger words and texts, and the gallery
+  prompts — no tabs to click through. Every field of the row, and the raw row
+  itself, are one click away at the bottom of the sidebar.
 * **The model's own description, in the panel.** Civitai's "about this model"
   text — and the version's own notes — are fetched with everything else and
-  shown on their own tab. The HTML is converted to text *once, at fetch time*,
+  shown in the sidebar. The HTML is converted to text *once, at fetch time*,
   so the library stays plain CSV and nothing markup-shaped reaches the dialog.
 * **Upload CSVs from the settings menu.** *Settings → Extended LoRA Details*
   has a file picker that copies a CSV into the extension's library.
@@ -43,8 +51,23 @@ model description, trigger words and gallery prompts, straight from Civitai.
   up rather than starting over. Text is fetched by default; **gallery images are
   never downloaded by a fetch** and stay a per-prompt (or per-LoRA) request.
 * **Download the gallery image behind a prompt.** Each prompt keeps the image it
-  came from; a button beside the prompt saves it into one flat folder. Delete a
-  file and it is simply offered again.
+  came from; a button beside the prompt — or on its card — saves it into one flat
+  folder, and the card shows it from then on. Delete a file and it is simply
+  offered again.
+* **Fetch from the dialog.** A LoRA the library has never seen gets a **Fetch
+  from Civitai** button right in its panel, which looks up the new LoRAs in its
+  folder in the background; one Civitai could not resolve before gets **Retry on
+  Civitai**.
+* **MOSS-Image, like every other family.** A MOSS LoRA is fetched and shown the
+  same way as a Krea 2 or Flux one. Its *layout* prompts — the JSON that Forge
+  Neo's JSON Builder compiles — are kept exactly as written, so *Append* and
+  *Replace* hand MOSS the same prompt, while the panel shows what the layout
+  depicts: its caption and the objects, characters and lettering it places. A
+  MOSS LoRA is also recognised by its own tensor names, which count as base-model
+  evidence when Civitai's label is missing or just says *Other*.
+* **One library, several base models.** *Only accept these base models* takes a
+  list — `Krea 2, MOSS Image` — so a filter set up for one family no longer
+  turns the others away.
 * **Folders per UI Preset.** Assign folders to a *UI Preset* — Forge Neo's
   `zit`, `flux`, `xl`, … quick setting — and while that preset is active every
   extra-network browser (Lora, Checkpoints, Textual Inversion, anything else
@@ -119,17 +142,22 @@ last time* when you do want those tried again.
 ### 3. Open a LoRA card's details
 
 On the LoRA tab, click a card's ⚙ (*edit metadata*) icon. The **Extended
-details** panel sits below the stock fields:
+details** panel sits right under the dialog's header — name, file table and
+preview — and above the fields you edit (a setting moves it back to the bottom).
+It reads like Wan2GP's *Inspect* view:
 
-| Tab | Contents |
+| Part | Contents |
 | --- | --- |
-| **Overview** | Every field from the matched row(s): model name, Civitai link, base model, trigger words, and any extra columns your CSV carries. |
-| **Description** | The model's Civitai description, as text with its paragraphs, lists and links intact, plus the version's own notes under *About this version*. |
-| **Trigger words** | Clickable chips — clicking one adds or removes it from the dialog's *Activation text*. Buttons set or append the whole set. |
-| **Prompts** | A searchable selector over every gallery prompt, with ‹ › stepping, a copy button, and *Append to prompt* / *Replace prompt*. Below that, the prompt's gallery image: download it, or the whole set for this LoRA, and see it inline once saved. An *All prompts* accordion lists them. |
-| **Raw CSV row** | The matched row(s) as JSON, for when a column is not displayed elsewhere. |
+| **Title strip** | The Civitai model name, its version, base model and creator, an **Open on Civitai ↗** button, and which CSV row matched — by SHA256, short hash, path or name. |
+| **Facts** | Version, base model, creator, Civitai ids, the fetch status when it was not a clean match, what the LoRA's tensor names say it is (MOSS-Image), and its SHA256 and Forge hash. A LoRA with no match — or one Civitai had nothing for — gets its **Fetch** / **Retry on Civitai** button here. |
+| **Trigger words** | Chips — clicking one adds it to the dialog's *Activation text*, or takes it out; a lit chip is one that is in it, and typing in the box keeps them in step. **Copy all**, **Use** and **Append** act on the whole set. |
+| **Description**, **Version notes** | The model's Civitai description and the version's own notes, with paragraphs, lists and links intact, each with **Copy**. A long one is shown in part, with **Show more**. |
+| **Negative prompt** | The row's negative prompt, when it has one: **Copy**, or **Append to negative**. |
+| **All fields**, **Raw CSV row** | Folded away at the bottom of the sidebar: every field of the matched row(s), extra columns included, and the row(s) as JSON with **Copy**. |
+| **Gallery prompts** | A searchable selector over every prompt with ‹ › stepping. The selected prompt is shown large: its gallery image (download it, or every image for this LoRA) beside its text — with copy, **Append to prompt** and **Replace prompt**, and for a MOSS layout a summary of what it depicts. |
+| **All prompts** | Every prompt as a card: its image once saved (or a **Download image** button), the prompt, and **Copy**, **Append**, **Replace**. Clicking a card's number or image shows it in the large view above. |
 
-The panel header summarises the match, and the panel opens itself when there is
+The panel's title summarises the match, and the panel opens itself when there is
 one (configurable).
 
 <!-- ------------------------------------------------------------------ -->
@@ -194,6 +222,7 @@ case-insensitively and ignoring separators.
 | **Identity (hash)** | `sha256`, `hash`, `file_hash`, `checksum`, `addnet_hash`, `shorthash`, `model_hash`, `sshs_model_hash`, `autov2` |
 | **Identity (path)** | `safetensor_file`, `filename`, `path`, `relative_path`, `lora_file`, … |
 | Model name | `civitai_model_name`, `model_name`, `name`, `title` |
+| Version, base model, creator | `civitai_version_name` / `version_name`, `base_model`, `civitai_creator` / `creator` / `author` |
 | Trigger words | `trigger_words`, `trained_words`, `activation_text`, `keywords`, `tags` |
 | Description | `model_description`, `description`, `about_this_model` |
 | Version description | `version_description`, `about_this_version`, `version_notes` |
@@ -202,8 +231,9 @@ case-insensitively and ignoring separators.
 | Negative prompt | `negative_prompt`, `negative_text` |
 | Link | `civitai_url`, `url`, `model_url` |
 
-**Anything not recognised is still shown**, under the row's field table — no
-column from your CSV is dropped.
+**Anything not recognised is still shown**, under *All fields* — no column from
+your CSV is dropped. Version, base model and creator are shown in the panel's
+title strip and facts, and are listed under *All fields* as well.
 
 Matching is tried in this order: **full SHA256 → short/AddNet hash → file path →
 file name**. A CSV without a hash column therefore still works; it just matches
@@ -214,8 +244,8 @@ always writes one.
 
 ```
 safetensor_file, sha256, addnet_hash, civitai_model_name, civitai_model_id,
-civitai_version_id, civitai_version_name, base_model, civitai_url,
-trigger_words, status, note, model_description, version_description,
+civitai_version_id, civitai_version_name, base_model, civitai_creator,
+civitai_url, trigger_words, status, note, model_description, version_description,
 positive_prompt_1, prompt_image_url_1, prompt_image_id_1,
 positive_prompt_2, prompt_image_url_2, prompt_image_id_2, …
 ```
@@ -243,6 +273,7 @@ The same fetcher runs standalone, without the WebUI:
 ```bash
 python tools/civitai_lora_csv.py --root /path/to/loras
 python tools/civitai_lora_csv.py --root /path/to/loras --base-model "Krea 2" --strict
+python tools/civitai_lora_csv.py --root /path/to/loras --base-model "Krea 2, MOSS Image"
 python tools/civitai_lora_csv.py --root /path/to/loras --no-descriptions
 ```
 
@@ -262,8 +293,12 @@ These are unchanged from the original script this was built from:
 * the returned **version id** is authoritative for trigger words and for
   filtering the gallery, so sibling versions on the same model page cannot bleed
   into each other;
-* `--base-model` rejects versions Civitai explicitly labels as something else;
-  with `--require-base-model-label`, unlabeled exact matches are rejected too.
+* `--base-model` rejects versions Civitai explicitly labels as something else
+  (it takes several, comma-separated); with `--require-base-model-label`,
+  unlabeled exact matches are rejected too. Civitai's `baseModelType` —
+  *Standard*, *Inpainting*, … — names a variant, not a family, so it never counts
+  as a conflicting label. Local evidence can stand in for a generic label: the
+  safetensors metadata, or for MOSS-Image the file's tensor names.
 
 Gallery pagination is followed to the end, `nextPage` URLs outside `civitai.com`
 are refused rather than followed with credentials, and repeated pages stop the
@@ -278,6 +313,7 @@ walk defensively. The CSV is written atomically.
 | Setting | Default | Notes |
 | --- | --- | --- |
 | Show the extended details panel | on | needs a *Reload UI* |
+| Show it above the fields you edit | on | off: at the bottom, above Cancel/Save; needs a *Reload UI* |
 | Library directory | `<extension>/library` | takes effect immediately |
 | Add a CSV to the library | — | the uploader |
 | Filter the browsers by the active preset's folders | on | assign them on the *Preset folders* tab |
@@ -300,7 +336,7 @@ walk defensively. The CSV is written atomically.
 | Fetch the model description | on | one extra request per model page |
 | Fill in missing text details on a refresh | on | tops up rows that have no description yet |
 | Delay between requests / timeout / images per version | 0.15 s / 30 s / all | |
-| Only accept this base model | — | e.g. `Krea 2` |
+| Only accept these base models | — | e.g. `Krea 2`, or `Krea 2, MOSS Image` |
 | Require an explicit base-model label | off | |
 | Retry unresolved LoRAs on a refresh | off | seeds the checkbox on the fetch tab |
 
@@ -314,8 +350,15 @@ walk defensively. The CSV is written atomically.
   several versions of the same model still cost a single request. Turn the
   option off if you want the leanest possible scan.
 * **A CSV from another tool still works.** It simply has no description column;
-  the *Description* tab then says so, and a refresh with *fill in missing text
-  details* on adds one.
+  the panel then says so, and a refresh with *fill in missing text details* on
+  adds one.
+* **The creator comes from the model page**, which a fetch reads whenever it
+  collects descriptions. Rows fetched before the creator was recorded simply do
+  not show one.
+* **A MOSS layout prompt is never rewritten.** What the library holds is what
+  reaches the prompt box; the summary beside it is read from the JSON, never
+  written back. A layout Civitai hands over as a parsed object is turned back
+  into the compiled one-line form Forge's JSON Builder produces.
 * **Gallery images need a CSV that has their URLs.** A CSV written before this
   feature existed, or by another tool, has prompts but no image URLs — those
   prompts simply show "no image URL in the library". Re-run a fetch (with
@@ -359,7 +402,10 @@ python tests/test_extended_lora_details.py     # or: pytest tests/
 ```
 
 These cover CSV parsing and column aliasing, hash/path/name matching, the
-Civitai identity rules, incremental refresh and the text backfill, the
-HTML → text description conversion and its rendering, atomic CSV writes, the
-values carried over from the last fetch, and the job manager. They need no WebUI
-and make no network calls — the Civitai client is stubbed.
+Civitai identity rules (several base models, variant labels, MOSS-Image tensor
+names), MOSS layout prompts, incremental refresh and the text backfill, the
+HTML → text description conversion and its rendering, the panel's HTML, the
+gallery thumbnails, atomic CSV writes, the values carried over from the last
+fetch, and the job manager. They need no WebUI and make no network calls — the
+Civitai client is stubbed. Two more check the panel's placement and its fetch
+button; they run when Gradio is installed and skip otherwise.

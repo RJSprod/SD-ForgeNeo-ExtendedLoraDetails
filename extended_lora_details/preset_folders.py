@@ -43,6 +43,8 @@ FALLBACK_PRESETS = (
     "ernie",
     "pid",
     "krea",
+    "qwen21",
+    "moss",
 )
 
 

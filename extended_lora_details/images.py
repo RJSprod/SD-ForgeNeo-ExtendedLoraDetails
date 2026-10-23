@@ -9,6 +9,7 @@ download it again, exactly like it had never been fetched.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import os
 import re
@@ -17,11 +18,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .common import EXTENSION_ROOT, clean_cell, human_bytes, log, opt
+from .common import EXTENSION_ROOT, cache_dir, clean_cell, human_bytes, log, opt
 
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_BYTES = 32 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024
+
+# The gallery cards show a small copy of each downloaded image, embedded in the
+# page: the image folder can live anywhere, and Gradio only serves files from
+# the paths it was told about.
+THUMB_SIZE = 384
+THUMB_SOURCE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".avif"}
+VIDEO_SUFFIXES = {".mp4", ".webm"}
 
 # Extensions we are willing to write. Anything else is stored as .img rather
 # than trusting a remote-supplied suffix.
@@ -186,6 +194,76 @@ def download(url: str, image_id: str = "", *, directory: Path | None = None, tim
                 pass
 
 
+def is_video(path) -> bool:
+    return Path(path).suffix.lower() in VIDEO_SUFFIXES
+
+
+def thumbnail_dir() -> Path:
+    return cache_dir() / "thumbs"
+
+
+def thumbnail(path, *, size: int = THUMB_SIZE, directory: Path | None = None) -> Path | None:
+    """A small WebP copy of a downloaded image, made once and cached.
+
+    The cache key covers the file's path, size and mtime, so a replaced image
+    gets a fresh thumbnail. ``None`` for videos, unreadable files, or when
+    Pillow is not available.
+    """
+    source = Path(path)
+    if source.suffix.lower() not in THUMB_SOURCE_SUFFIXES:
+        return None
+    try:
+        info = source.stat()
+    except OSError:
+        return None
+
+    key = hashlib.sha256(f"{source.resolve()}|{info.st_size}|{info.st_mtime_ns}|{size}".encode("utf-8")).hexdigest()[:16]
+    folder = directory or thumbnail_dir()
+    target = folder / f"{source.stem}-{key}.webp"
+    if target.is_file():
+        return target
+
+    try:
+        from PIL import Image
+    except ImportError:  # pragma: no cover - Pillow ships with the WebUI
+        return None
+
+    temp_name: str | None = None
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        with Image.open(source) as image:
+            image.thumbnail((size, size))
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            with tempfile.NamedTemporaryFile(dir=folder, prefix=".eld-", suffix=".webp", delete=False) as handle:
+                temp_name = handle.name
+                image.save(handle, "WEBP", quality=78)
+        os.replace(temp_name, target)
+        temp_name = None
+        return target
+    except Exception as exc:  # noqa: BLE001 - a card without a picture is fine
+        log(f"could not make a thumbnail of {source.name}: {exc}")
+        return None
+    finally:
+        if temp_name:
+            try:
+                os.unlink(temp_name)
+            except OSError:
+                pass
+
+
+def thumbnail_data_uri(path, *, size: int = THUMB_SIZE, directory: Path | None = None) -> str:
+    """The thumbnail as a ``data:`` URI, or ``""`` when there is none."""
+    thumb = thumbnail(path, size=size, directory=directory)
+    if thumb is None:
+        return ""
+    try:
+        payload = thumb.read_bytes()
+    except OSError:
+        return ""
+    return "data:image/webp;base64," + base64.b64encode(payload).decode("ascii")
+
+
 def stats(directory: Path | None = None) -> dict:
     """Count and total size of the image folder."""
     folder = directory or image_dir()
@@ -219,6 +297,18 @@ def purge(directory: Path | None = None) -> tuple[int, str]:
             removed += 1
         except OSError:
             failed += 1
+
+    # The cached thumbnails are copies of what was just deleted.
+    if directory is None:
+        try:
+            for entry in os.scandir(thumbnail_dir()):
+                if entry.is_file():
+                    try:
+                        os.unlink(entry.path)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
 
     message = f"Deleted {removed} file(s) from {folder}."
     if failed:

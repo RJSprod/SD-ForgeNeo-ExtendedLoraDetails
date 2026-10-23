@@ -5,77 +5,652 @@
  * (light, dark or custom) keeps applying to the panel.
  */
 
-/* The stock dialog is 56em wide, which leaves the extended panel cramped once
-   prompts and an image preview are in it. Widen it only when our panel is
-   present, so the checkpoint and embedding editors are untouched. */
+/* ======================================================== the LoRA dialog */
+
+/* The stock dialog is 56em wide; the panel's sidebar and gallery need more.
+   Widen it only when our panel is present, so the checkpoint and embedding
+   editors are untouched. */
 .edit-user-metadata:has(.eld-panel) {
-    width: min(76em, 94vw);
+    width: min(84em, 94vw);
 }
 
-.eld-panel {
-    margin-top: 1.75em;
+/* The stock file table, compacted into the same key/value look as the facts. */
+.edit-user-metadata:has(.eld-panel) .file-metadata,
+.edit-user-metadata:has(.eld-panel) .file-metadata tr {
+    border: 0;
+    border-collapse: collapse;
+    font-size: var(--text-sm);
+}
+
+.edit-user-metadata:has(.eld-panel) .file-metadata th,
+.edit-user-metadata:has(.eld-panel) .file-metadata td {
+    padding: 0.3em 0.9em 0.3em 0;
+    border: 0;
+    border-bottom: 1px solid var(--border-color-primary);
+    background: transparent;
+    vertical-align: baseline;
+}
+
+.edit-user-metadata:has(.eld-panel) .file-metadata th {
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+/* The fields you edit: activation text, weight and negative prompt share a row. */
+.edit-user-metadata:has(.eld-panel) .form:has(> .eld-stock-weight) {
+    display: grid;
+    grid-template-columns: minmax(0, 3fr) minmax(9rem, 1fr) minmax(0, 3fr);
+    align-items: stretch;
+}
+
+/* ------------------------------------------------------------- the panel */
+
+.eld-panel.block {
+    margin: 1.25em 0 0.75em;
 }
 
 .eld-panel > .label-wrap {
     padding: 0.35em 0;
     font-size: var(--text-md);
+    font-weight: 600;
 }
 
-/* Vertical rhythm inside the panel: the request was for room to breathe, with
-   page scroll rather than nested scrollbars. */
-.eld-panel .eld-tabs {
-    margin-top: 1em;
+.eld-panel .eld-body {
+    gap: 1.25em;
+    align-items: flex-start;
 }
 
-.eld-panel .eld-tab {
-    padding-top: 1.25em;
-    display: flex;
-    flex-direction: column;
-    gap: 1.1em;
-}
-
-.eld-panel .eld-tab > * {
-    margin: 0 !important;
-}
-
-/* Touch-friendly action rows: buttons keep a comfortable hit area and wrap
-   onto their own line rather than being squeezed side by side. */
-.eld-panel .eld-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.75em;
-    margin: 0;
-}
-
-.eld-panel .eld-actions > button {
-    flex: 1 1 14em;
-    min-height: 2.75em;
-}
-
-.eld-panel .eld-stepper > button {
-    flex: 1 1 8em;
-}
-
-.eld-image-block {
-    padding: 1em;
+/* The sidebar reads as one card, like the Inspect view's left column. */
+.eld-panel .eld-side {
+    padding: 0.9em 1em 1em;
     border: 1px solid var(--border-color-primary);
     border-radius: var(--radius-lg);
     background: var(--background-fill-secondary);
-    display: flex;
-    flex-direction: column;
     gap: 0.9em;
 }
 
-.eld-image-preview img {
-    max-height: 34em;
+.eld-panel .eld-main {
+    gap: 0.75em;
+}
+
+/* Gradio pads every HTML block; the panel's own spacing is enough. */
+.eld-panel .block.gradio-html {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.eld-panel .prose {
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+}
+
+/* Gradio's prose styles space buttons apart - all but the last one in a row. */
+.eld-panel .prose button {
+    margin: 0;
+}
+
+/* ------------------------------------------------------------ title strip */
+
+.eld-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6em 1.2em;
+}
+
+.eld-head-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    min-width: 0;
+}
+
+.eld-head-title {
+    font-size: var(--text-xl);
+    font-weight: 600;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+}
+
+.eld-panel .eld-head-title a {
+    color: var(--body-text-color);
+    text-decoration: none;
+}
+
+.eld-panel .eld-head-title a:hover {
+    text-decoration: underline;
+}
+
+.eld-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+}
+
+.eld-pill {
+    padding: 0.1em 0.65em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: 999px;
+    background: var(--input-background-fill);
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+}
+
+.eld-pill-accent {
+    border-color: var(--color-accent, var(--primary-500));
+    color: var(--body-text-color);
+}
+
+.eld-panel a.eld-open-link {
+    flex: 0 0 auto;
+    padding: 0.4em 0.9em;
+    border: 1px solid var(--button-secondary-border-color, var(--border-color-primary));
+    border-radius: var(--button-small-radius, var(--radius-sm));
+    background: var(--button-secondary-background-fill);
+    color: var(--button-secondary-text-color, var(--body-text-color));
+    font-size: var(--text-sm);
+    font-weight: 600;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.eld-panel a.eld-open-link:hover {
+    background: var(--button-secondary-background-fill-hover, var(--button-secondary-background-fill));
+}
+
+.eld-head-sub {
+    margin-top: 0.35em;
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+}
+
+/* ----------------------------------------------------------------- facts */
+
+.eld-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3em;
+}
+
+.eld-fact {
+    display: grid;
+    grid-template-columns: 6.5rem minmax(0, 1fr);
+    gap: 0.6em;
+    align-items: baseline;
+}
+
+.eld-fact-key {
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.eld-fact-value {
+    overflow-wrap: anywhere;
+}
+
+.eld-panel code.eld-hash {
+    padding: 0;
+    background: none;
+    font-size: var(--text-xs);
+    word-break: break-all;
+}
+
+.eld-panel .eld-fetch {
+    gap: 0.5em;
+    padding-top: 0.2em;
+}
+
+.eld-panel .eld-fetch > button {
+    align-self: flex-start;
+    width: auto;
+    padding-left: 1.4em;
+    padding-right: 1.4em;
+}
+
+/* -------------------------------------------------------------- sections */
+
+.eld-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+}
+
+.eld-section + .eld-section {
+    margin-top: 1.1em;
+}
+
+/* In the sidebar each block is set off from the one above it. */
+.eld-side-html .eld-section,
+.eld-side-html details.eld-more,
+.eld-side-html > .eld-notice {
+    padding-top: 0.9em;
+    border-top: 1px solid var(--border-color-primary);
+}
+
+.eld-side-html .eld-section + .eld-section,
+.eld-side-html .eld-section + details.eld-more,
+.eld-side-html details.eld-more + details.eld-more {
+    margin-top: 0.9em;
+}
+
+.eld-side-html .eld-raw-section {
+    padding-top: 0;
+    border-top: 0;
+}
+
+.eld-section-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4em 0.8em;
+}
+
+.eld-section-title {
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.eld-section-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3em;
+}
+
+.eld-count {
+    display: inline-block;
+    margin-left: 0.35em;
+    padding: 0 0.5em;
+    border-radius: 999px;
+    background: var(--input-background-fill);
+    color: var(--body-text-color);
+    font-size: var(--text-xs);
+    letter-spacing: 0;
+}
+
+.eld-muted {
+    color: var(--body-text-color-subdued);
+    font-weight: normal;
+}
+
+/* Small buttons beside a section's title: Copy, Use, Append, ... */
+.eld-panel button.eld-tool {
+    padding: 0.15em 0.6em;
+    border: 1px solid var(--button-secondary-border-color, var(--border-color-primary));
+    border-radius: var(--button-small-radius, var(--radius-sm));
+    background: var(--button-secondary-background-fill);
+    color: var(--button-secondary-text-color, var(--body-text-color));
+    font-size: var(--text-xs);
+    line-height: 1.6;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.eld-panel button.eld-tool:hover {
+    border-color: var(--color-accent, var(--primary-500));
+}
+
+.eld-panel button.eld-tool:disabled {
+    cursor: progress;
+    opacity: 0.7;
+}
+
+/* Trigger words as chips: a click adds the word to - or takes it out of - the
+   activation text, and a lit chip is one that is in it. */
+.eld-words {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4em;
+}
+
+.eld-panel button.eld-word {
+    padding: 0.2em 0.75em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: 999px;
+    background: var(--input-background-fill);
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    cursor: pointer;
+}
+
+.eld-panel button.eld-word:hover {
+    border-color: var(--color-accent, var(--primary-500));
+}
+
+.eld-panel button.eld-word.eld-word-on {
+    border-color: var(--color-accent, var(--primary-500));
+    background: var(--color-accent-soft, var(--background-fill-primary));
+    box-shadow: inset 0 0 0 1px var(--color-accent, var(--primary-500));
+}
+
+/* ---------------------------------------------------- descriptions, texts */
+
+/* Descriptions are stored as text and re-formatted on the way here, so the only
+   tags in them are the paragraph/line/link ones this extension emits. */
+.eld-text {
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    line-height: 1.55;
+    overflow-wrap: anywhere;
+}
+
+.eld-panel .eld-description p {
+    margin: 0 0 0.75em;
+}
+
+.eld-panel .eld-description p:last-child {
+    margin-bottom: 0;
+}
+
+.eld-panel .eld-description a {
+    color: var(--link-text-color, var(--body-text-color));
+    text-decoration: underline;
+}
+
+/* A long text is shown in part and opened with "Show more", so the page keeps
+   one scrollbar. */
+.eld-clamp {
+    max-height: 15em;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent);
+    mask-image: linear-gradient(to bottom, #000 72%, transparent);
+}
+
+.eld-expanded .eld-clamp {
+    max-height: none;
+    -webkit-mask-image: none;
+    mask-image: none;
+}
+
+.eld-panel button.eld-more-toggle {
+    align-self: flex-start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--link-text-color, var(--color-accent, var(--primary-500)));
+    font-size: var(--text-xs);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.eld-prompt-text {
+    padding: 0.45em 0.6em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-sm);
+    background: var(--input-background-fill);
+    font-size: var(--text-xs);
+    white-space: pre-wrap;
+}
+
+/* ---------------------------------------------------- folded-away details */
+
+details.eld-more {
+    margin-top: 0.9em;
+}
+
+details.eld-more > summary {
+    padding: 0.25em 0;
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    user-select: none;
+}
+
+details.eld-more > summary:hover {
+    color: var(--body-text-color);
+}
+
+details.eld-more[open] > summary {
+    margin-bottom: 0.5em;
+}
+
+.eld-source-block + .eld-source-block {
+    margin-top: 1.25em;
+}
+
+.eld-raw-section .eld-section-head {
+    justify-content: flex-end;
+}
+
+.eld-panel pre.eld-raw {
+    max-height: 24em;
+    margin: 0;
+    padding: 0.6em 0.75em;
+    overflow: auto;
+    border-radius: var(--radius-sm);
+    background: var(--input-background-fill);
+    color: var(--body-text-color);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* ------------------------------------------------------- gallery prompts */
+
+.eld-panel .eld-picker {
+    gap: 0.4em;
+    align-items: center;
+}
+
+.eld-panel .eld-picker .eld-step {
+    min-width: 2.75em;
+    font-size: var(--text-lg);
+}
+
+/* The selected prompt, as one large card: its image beside its text. */
+.eld-panel .eld-viewer {
+    gap: 1em;
+    padding: 0.8em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    background: var(--background-fill-secondary);
+}
+
+.eld-panel .eld-viewer-media,
+.eld-panel .eld-viewer-text {
+    gap: 0.6em;
+}
+
+.eld-panel .eld-image-preview {
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.eld-panel .eld-image-preview .image-container,
+.eld-panel .eld-image-preview img {
+    max-height: 24em;
+}
+
+.eld-panel .eld-image-preview img {
+    width: 100%;
     object-fit: contain;
+}
+
+.eld-panel .eld-actions {
+    gap: 0.5em;
+}
+
+.eld-panel .eld-actions > button {
+    flex: 1 1 10em;
+    min-height: 2.4em;
+}
+
+.eld-count-line {
+    font-size: var(--text-sm);
+}
+
+/* What a MOSS-Image layout prompt depicts, above its JSON. */
+.eld-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35em;
+    margin-top: 0.5em;
+    padding: 0.55em 0.7em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-sm);
+    background: var(--background-fill-primary);
+    font-size: var(--text-sm);
+}
+
+.eld-layout-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5em;
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+}
+
+.eld-layout-caption {
+    font-weight: 600;
+}
+
+.eld-panel ul.eld-layout-items {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-xs);
+}
+
+.eld-panel ul.eld-layout-items li {
+    margin: 0.15em 0;
+}
+
+.eld-layout-label {
+    display: inline-block;
+    min-width: 5.5em;
+    margin-right: 0.5em;
+    color: var(--body-text-color-subdued);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.eld-badge-inline {
+    padding: 0 0.5em;
+    border: 1px solid var(--color-accent, var(--primary-500));
+    border-radius: 999px;
+    color: var(--body-text-color);
+    font-size: var(--text-xxs, var(--text-xs));
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+}
+
+/* Every prompt as a card - Wan2GP's media grid. */
+.eld-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(13.5rem, 1fr));
+    gap: 0.75em;
+}
+
+.eld-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45em;
+    min-width: 0;
+    padding: 0.55em;
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    background: var(--background-fill-secondary);
+}
+
+.eld-panel .eld-card-media {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 12rem;
+    padding: 0;
+    overflow: hidden;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: var(--background-fill-primary);
+}
+
+.eld-panel button.eld-card-media {
+    cursor: pointer;
+}
+
+.eld-panel .eld-card-media img {
+    max-width: 100%;
+    max-height: 100%;
+    margin: 0;
+    object-fit: contain;
+}
+
+.eld-card-media-empty {
+    color: var(--body-text-color-subdued);
+    font-size: var(--text-xs);
+}
+
+.eld-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35em;
+}
+
+.eld-card-head .eld-section-tools {
+    margin-left: auto;
+}
+
+.eld-panel button.eld-card-num {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.eld-panel button.eld-card-num:hover {
+    text-decoration: underline;
+}
+
+.eld-card-text {
+    max-height: 7.4em;
+    overflow: hidden;
+    color: var(--body-text-color);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent);
+    mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+
+.eld-more-note {
+    padding: 0.6em 0.2em 0;
+    font-size: var(--text-xs);
 }
 
 /* --------------------------------------------------------------- notices */
 
 .eld-notice {
-    padding: 0.75em 1em;
-    margin: 0.5em 0;
+    padding: 0.6em 0.9em;
+    margin: 0.4em 0;
     border-radius: var(--radius-sm);
     border-left: 3px solid var(--border-color-primary);
     background: var(--background-fill-secondary);
@@ -105,37 +680,6 @@
     font-size: 0.9em;
 }
 
-.eld-muted {
-    color: var(--body-text-color-subdued);
-    font-weight: normal;
-}
-
-/* ---------------------------------------------------------------- chips */
-
-.eld-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5em;
-    margin: 0.6em 0 0.2em;
-}
-
-.eld-chip {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.5em;
-    padding: 0.35em 0.8em;
-    border: 1px solid var(--border-color-primary);
-    border-radius: var(--radius-lg);
-    background: var(--background-fill-secondary);
-    color: var(--body-text-color-subdued);
-    font-size: var(--text-xs);
-}
-
-.eld-chip code {
-    color: var(--body-text-color);
-    overflow-wrap: anywhere;
-}
-
 /* --------------------------------------------------------------- tables */
 
 .eld-table {
@@ -147,7 +691,7 @@
 
 .eld-table th,
 .eld-table td {
-    padding: 0.55em 1em;
+    padding: 0.45em 0.8em;
     text-align: left;
     vertical-align: top;
     border-bottom: 1px solid var(--border-color-primary);
@@ -188,89 +732,6 @@
     font-weight: 600;
     color: var(--body-text-color);
     padding-bottom: 0.5em;
-}
-
-.eld-overview {
-    padding-top: 0.25em;
-}
-
-/* ----------------------------------------------------------- description */
-
-/* The description is stored as text and re-formatted here, so the only tags in
-   it are the paragraph/line/link ones this extension emits. */
-.eld-description-block {
-    padding-top: 0.25em;
-}
-
-.eld-description {
-    color: var(--body-text-color);
-    font-size: var(--text-md);
-    line-height: 1.6;
-    overflow-wrap: anywhere;
-}
-
-.eld-description p {
-    margin: 0 0 0.85em;
-}
-
-.eld-description p:last-child {
-    margin-bottom: 0;
-}
-
-.eld-description a {
-    color: var(--link-text-color, var(--body-text-color));
-    text-decoration: underline;
-}
-
-.eld-description-heading {
-    margin-top: 1.2em;
-    padding-bottom: 0.3em;
-    color: var(--body-text-color-subdued);
-    font-size: var(--text-sm);
-    font-weight: var(--weight-semibold, 600);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-}
-
-/* --------------------------------------------------------------- prompts */
-
-.eld-count {
-    color: var(--body-text-color);
-    font-size: var(--text-md);
-    padding: 0.2em 0;
-}
-
-.eld-prompt-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-}
-
-.eld-prompt-list li {
-    display: flex;
-    gap: 1em;
-    padding: 0.8em 0.3em;
-    border-bottom: 1px solid var(--border-color-primary);
-    font-size: var(--text-sm);
-    color: var(--body-text-color);
-}
-
-.eld-prompt-index {
-    flex: 0 0 2.2em;
-    text-align: right;
-    color: var(--body-text-color-subdued);
-    font-variant-numeric: tabular-nums;
-}
-
-.eld-prompt-text {
-    flex: 1 1 auto;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-}
-
-.eld-more {
-    padding: 0.5em 0.2em;
-    font-size: var(--text-sm);
 }
 
 /* ------------------------------------------------------------------ jobs */
@@ -357,7 +818,15 @@
     font-size: var(--text-sm);
 }
 
-/* Narrow windows and touch: one action per line, nothing squeezed. */
+/* ------------------------------------------------- narrow windows, touch */
+
+@media (max-width: 900px) {
+    .edit-user-metadata:has(.eld-panel) .form:has(> .eld-stock-weight) {
+        grid-template-columns: minmax(0, 1fr);
+    }
+}
+
+/* One action per line, nothing squeezed. */
 @media (max-width: 700px) {
     .edit-user-metadata:has(.eld-panel) {
         width: 96vw;
@@ -366,6 +835,10 @@
 
     .eld-panel .eld-actions > button {
         flex: 1 1 100%;
+    }
+
+    .eld-cards {
+        grid-template-columns: minmax(0, 1fr);
     }
 
     .eld-table th {

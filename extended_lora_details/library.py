@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .common import (
+    NETWORK_EXTENSIONS,
     clean_cell,
     log,
     normalize_hash,
@@ -53,6 +54,16 @@ NEGATIVE_COLUMNS = ("negative_prompt", "negative_text", "negative_prompts")
 DESCRIPTION_COLUMNS = ("model_description", "civitai_model_description", "description", "about_this_model", "model_about")
 VERSION_DESCRIPTION_COLUMNS = ("version_description", "civitai_version_description", "about_this_version", "version_notes")
 URL_COLUMNS = ("civitai_url", "url", "model_url", "link")
+
+# Read for the panel's header without being taken out of the row's other fields,
+# so the full field table still lists every one of them.
+VERSION_NAME_COLUMNS = ("civitai_version_name", "version_name", "model_version", "version")
+BASE_MODEL_COLUMNS = ("base_model", "civitai_base_model", "basemodel", "base_model_name")
+CREATOR_COLUMNS = ("civitai_creator", "creator", "creator_username", "author", "uploader")
+MODEL_ID_COLUMNS = ("civitai_model_id", "model_id")
+VERSION_ID_COLUMNS = ("civitai_version_id", "version_id", "model_version_id")
+STATUS_COLUMNS = ("status",)
+NOTE_COLUMNS = ("note",)
 
 PROMPT_COLUMN_RE = re.compile(r"^(?:positive_)?prompt(?:_?(\d+))?$")
 # Written beside each prompt by the bundled fetcher; `image_url_N` is accepted
@@ -83,10 +94,18 @@ class LibraryRecord:
     short_hashes: tuple[str, ...] = ()
     rel_path: str = ""
     stem: str = ""
+    file_name: str = ""
     model_name: str = ""
     url: str = ""
     description: str = ""
     version_description: str = ""
+    version_name: str = ""
+    base_model: str = ""
+    creator: str = ""
+    model_id: str = ""
+    version_id: str = ""
+    status: str = ""
+    note: str = ""
     trigger_words: tuple[str, ...] = ()
     entries: tuple[PromptEntry, ...] = ()
     negative_prompts: tuple[str, ...] = ()
@@ -95,7 +114,7 @@ class LibraryRecord:
 
     @property
     def title(self) -> str:
-        return self.model_name or self.stem or self.rel_path or "(unnamed)"
+        return self.model_name or self.file_name or self.stem or self.rel_path or "(unnamed)"
 
     @property
     def prompts(self) -> tuple[str, ...]:
@@ -104,6 +123,21 @@ class LibraryRecord:
     @property
     def has_description(self) -> bool:
         return bool(self.description or self.version_description)
+
+    @property
+    def resolved(self) -> bool:
+        """Did the row get any content? A fetch writes a row for a LoRA Civitai
+        had nothing for too - with a status, and nothing else."""
+        return bool(self.model_name or self.trigger_words or self.prompts)
+
+
+def _file_name(raw_path: str) -> str:
+    """The file's name as the CSV spells it, extension dropped - for display."""
+    base = clean_cell(raw_path).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    for extension in NETWORK_EXTENSIONS:
+        if base.lower().endswith(extension):
+            return base[: -len(extension)]
+    return base
 
 
 def _split_triggers(value: str) -> list[str]:
@@ -158,6 +192,13 @@ def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRe
             consumed.add(column)
         if candidate and len(candidate) != 64 and candidate not in short_hashes:
             short_hashes.append(candidate)
+
+    def peek(candidates) -> str:
+        for candidate in candidates:
+            value = normalized.get(candidate, "")
+            if value:
+                return value
+        return ""
 
     raw_path = take(PATH_COLUMNS)
     model_name = take(NAME_COLUMNS)
@@ -234,10 +275,18 @@ def parse_row(row: dict[str, str], *, source: str, row_number: int) -> LibraryRe
         short_hashes=tuple(short_hashes),
         rel_path=normalize_path(raw_path),
         stem=path_stem(raw_path) or normalize_key(model_name),
+        file_name=_file_name(raw_path),
         model_name=model_name,
         url=url,
         description=description,
         version_description=version_description,
+        version_name=peek(VERSION_NAME_COLUMNS),
+        base_model=peek(BASE_MODEL_COLUMNS),
+        creator=peek(CREATOR_COLUMNS),
+        model_id=peek(MODEL_ID_COLUMNS),
+        version_id=peek(VERSION_ID_COLUMNS),
+        status=peek(STATUS_COLUMNS),
+        note=peek(NOTE_COLUMNS),
         trigger_words=tuple(triggers),
         entries=tuple(entries),
         negative_prompts=tuple(negatives),
@@ -491,7 +540,7 @@ class Library:
         for record in records:
             if len(record.sha256) != 64:
                 continue
-            resolved = bool(record.model_name or record.trigger_words or record.prompts)
+            resolved = record.resolved
             if resolved_only and not resolved:
                 continue
             if require_description and resolved and not record.has_description:

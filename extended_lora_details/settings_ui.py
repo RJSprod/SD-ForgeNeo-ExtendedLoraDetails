@@ -186,6 +186,10 @@ def register() -> None:
             "Compute a missing SHA256 when the dialog opens (first open of a large LoRA takes a moment)",
         ).info("turn this off and use “Precompute hashes” on the extension tab instead"),
         "eld_display_header": OptionHTML("<h3>Panel</h3>"),
+        "eld_panel_first": option(
+            True,
+            "Show the extended details above the fields you edit, right under the dialog's header",
+        ).info("off: the panel sits at the bottom of the dialog, above Cancel/Save").needs_reload_ui(),
         "eld_open_by_default": option(False, "Open the extended details panel automatically"),
         "eld_open_on_match": option(True, "Open it automatically when the library has a match"),
         "eld_prompt_list_limit": OptionInfo(
@@ -244,8 +248,9 @@ def register() -> None:
             gr.Slider,
             {"minimum": 0, "maximum": 500, "step": 10},
         ),
-        "eld_base_model_filter": option("", "Only accept this base model").info(
-            'e.g. "Krea 2" or "Flux.1 D"; leave empty to accept any exact hash match'
+        "eld_base_model_filter": option("", "Only accept these base models").info(
+            'e.g. "Krea 2", or several separated by commas: "Krea 2, MOSS Image"; leave empty to '
+            "accept any exact hash match"
         ),
         "eld_require_explicit_label": option(
             False,

@@ -58,6 +58,230 @@ function eldReplacePrompt(tabname, text) {
 }
 
 /*
+ * The panel's own buttons: copy, the trigger-word chips, the prompt cards.
+ *
+ * The panel is HTML that Gradio replaces every time the dialog opens, so one
+ * listener on the document handles every [data-eld-action] inside it. Each
+ * section keeps the exact text its buttons act on in a hidden .eld-copy-source.
+ */
+
+function eldCopyFallback(value) {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try {
+        copied = document.execCommand("copy");
+    } catch (e) {
+        copied = false;
+    }
+    area.remove();
+    return copied;
+}
+
+/* The clipboard API needs a secure context; a LAN address over http is not one. */
+function eldCopyText(text) {
+    const value = String(text || "");
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(value).then(
+            function () {
+                return true;
+            },
+            function () {
+                return eldCopyFallback(value);
+            }
+        );
+    }
+    return Promise.resolve(eldCopyFallback(value));
+}
+
+function eldSourceText(scope) {
+    const source = scope ? scope.querySelector(".eld-copy-source") : null;
+    if (!source) return "";
+    return source.tagName === "TEXTAREA" ? source.value : source.textContent;
+}
+
+function eldFlash(button, label) {
+    if (!button || button.dataset.eldLabel) return;
+    button.dataset.eldLabel = button.textContent;
+    button.textContent = label;
+    setTimeout(function () {
+        button.textContent = button.dataset.eldLabel;
+        delete button.dataset.eldLabel;
+    }, 1200);
+}
+
+function eldSplitWords(text) {
+    return String(text || "")
+        .split(/ *, */)
+        .filter(function (word) {
+            return word.trim();
+        });
+}
+
+function eldActivationField(section) {
+    const id = section ? section.getAttribute("data-eld-target") : "";
+    if (!id) return null;
+    const holder = eldGradioRoot().querySelector("#" + CSS.escape(id));
+    return holder ? holder.querySelector("textarea, input") : null;
+}
+
+function eldSetField(field, value) {
+    field.value = value;
+    if (typeof updateInput === "function") {
+        updateInput(field);
+    } else {
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+}
+
+/* Light up the chips whose word is in the activation text right now. */
+function eldSyncChips(section) {
+    const field = eldActivationField(section);
+    if (!field) return;
+    const words = eldSplitWords(field.value);
+    section.querySelectorAll(".eld-word").forEach(function (chip) {
+        chip.classList.toggle("eld-word-on", words.indexOf(chip.getAttribute("data-word")) !== -1);
+    });
+}
+
+function eldTriggerAction(section, action, chip) {
+    const field = eldActivationField(section);
+    if (!field) return;
+    let words = eldSplitWords(field.value);
+
+    if (action === "toggle-trigger") {
+        const word = chip.getAttribute("data-word");
+        if (words.indexOf(word) !== -1) {
+            words = words.filter(function (piece) {
+                return piece !== word;
+            });
+        } else {
+            words.push(word);
+        }
+        eldSetField(field, words.join(", "));
+    } else if (action === "use-triggers") {
+        eldSetField(field, eldSourceText(section));
+    } else if (action === "append-triggers") {
+        eldSplitWords(eldSourceText(section)).forEach(function (word) {
+            if (words.indexOf(word) === -1) words.push(word);
+        });
+        eldSetField(field, words.join(", "));
+    }
+    eldSyncChips(section);
+}
+
+/* Hand a card's request to Python through the hidden textbox + button pair. */
+function eldBridge(id, value) {
+    const root = eldGradioRoot();
+    const area = root.querySelector("#" + CSS.escape(id) + " textarea");
+    const button = root.querySelector("#" + CSS.escape(id + "_button"));
+    if (!area || !button) return false;
+    eldSetField(area, value);
+    button.click();
+    return true;
+}
+
+function eldCardAction(card, action, button) {
+    const grid = card.closest("[data-eld-bridge]");
+    const tab = grid ? grid.getAttribute("data-eld-tab") : "txt2img";
+    const index = card.getAttribute("data-index");
+
+    if (action === "append-prompt") {
+        eldAppendPrompt(tab, eldSourceText(card));
+        eldFlash(button, "Appended");
+    } else if (action === "replace-prompt") {
+        eldReplacePrompt(tab, eldSourceText(card));
+    } else if (action === "view" || action === "download") {
+        if (!grid || !eldBridge(grid.getAttribute("data-eld-bridge"), action + ":" + index)) return;
+        if (action === "download") {
+            button.disabled = true;
+            button.textContent = "Downloading…";
+        } else {
+            const panel = card.closest(".eld-panel");
+            const viewer = panel ? panel.querySelector(".eld-picker") : null;
+            if (viewer) viewer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+    }
+}
+
+function eldHandleAction(button) {
+    const action = button.getAttribute("data-eld-action");
+    const card = button.closest(".eld-card");
+    if (card && action !== "copy") {
+        eldCardAction(card, action, button);
+        return;
+    }
+
+    const section = button.closest(".eld-section") || card;
+    if (action === "copy") {
+        eldCopyText(eldSourceText(card || section)).then(function (copied) {
+            eldFlash(button, copied ? "Copied" : "Copy failed");
+        });
+    } else if (action === "copy-word") {
+        eldCopyText(button.getAttribute("data-word")).then(function (copied) {
+            eldFlash(button, copied ? "Copied" : "Copy failed");
+        });
+    } else if (action === "toggle-trigger" || action === "use-triggers" || action === "append-triggers") {
+        eldTriggerAction(section, action, button);
+    } else if (action === "append-negative") {
+        const holder = button.closest("[data-eld-tab]");
+        eldWriteToPrompt(holder ? holder.getAttribute("data-eld-tab") : "txt2img", eldSourceText(section), "append", true);
+        eldFlash(button, "Appended");
+    } else if (action === "expand") {
+        const open = section.classList.toggle("eld-expanded");
+        button.textContent = open ? "Show less" : "Show more";
+        button.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+}
+
+/* Typing in the activation text keeps the chips' highlighting honest. */
+document.addEventListener("input", function (event) {
+    const field = event.target;
+    const holder = field && field.closest ? field.closest("[id]") : null;
+    if (!holder || !holder.id) return;
+    eldGradioRoot()
+        .querySelectorAll('.eld-triggers[data-eld-target="' + CSS.escape(holder.id) + '"]')
+        .forEach(eldSyncChips);
+});
+
+document.addEventListener("click", function (event) {
+    const target = event.target;
+    const button = target && target.closest ? target.closest("[data-eld-action]") : null;
+    if (!button || !button.closest(".eld-panel")) return;
+    event.preventDefault();
+    try {
+        eldHandleAction(button);
+    } catch (e) {
+        console.error("[Extended LoRA Details]", e);
+    }
+});
+
+/* Python clamps a text by its length; one that turns out to fit on screen needs
+   neither the fade nor the "Show more". Measured once it is visible. */
+function eldFitClamps() {
+    eldGradioRoot()
+        .querySelectorAll(".eld-panel .eld-clamp:not([data-eld-fit])")
+        .forEach(function (text) {
+            if (!text.offsetParent || !text.clientHeight || text.closest(".eld-expanded")) return;
+            text.setAttribute("data-eld-fit", "1");
+            if (text.scrollHeight > text.clientHeight + 4) return;
+            text.classList.remove("eld-clamp");
+            const toggle = text.parentElement ? text.parentElement.querySelector('[data-eld-action="expand"]') : null;
+            if (toggle) toggle.remove();
+        });
+}
+
+if (typeof onAfterUiUpdate === "function") {
+    onAfterUiUpdate(eldFitClamps);
+}
+
+/*
  * UI Preset → network browsers.
  *
  * Forge renders each extra-network pane server-side, so switching the UI Preset
