@@ -65,6 +65,12 @@ _WHITESPACE_RE = re.compile(r"\s+")
 _INLINE_SPACE_RE = re.compile(r"[ \t]+")
 _BLANK_LINES_RE = re.compile(r"\n{3,}")
 _TAG_RE = re.compile(r"<[^>]*>")
+# For the fallback only: the parser skips these elements' content, and stripping
+# their tags alone would leave a script's source behind as "text".
+_SKIPPED_BLOCK_RE = re.compile(
+    r"<\s*(" + "|".join(sorted(SKIP_TAGS)) + r")\b[^>]*>.*?<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _absolute(href: str) -> str:
@@ -90,40 +96,43 @@ class _TextExtractor(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self._parts: list[str] = []
-        self._pending = NO_BREAK
-        self._skip_depth = 0
-        # (index into _parts where the link's text starts, resolved href)
-        self._links: list[tuple[int, str]] = []
+        # HTMLParser keeps its own state on ``self`` - Python 3.13.x added a
+        # ``_pending`` buffer - so everything here carries a ``_text_`` prefix.
+        # Shadowing one of its names breaks ``close()`` for every description.
+        self._text_parts: list[str] = []
+        self._text_break = NO_BREAK
+        self._text_skip = 0
+        # (index into _text_parts where the link's text starts, resolved href)
+        self._text_links: list[tuple[int, str]] = []
         # One counter per open list; None marks an unordered list.
-        self._lists: list[int | None] = []
+        self._text_lists: list[int | None] = []
 
     # ------------------------------------------------------------- assembly
 
     def _break(self, strength: int) -> None:
-        if self._parts:  # never open the text with blank lines
-            self._pending = max(self._pending, strength)
+        if self._text_parts:  # never open the text with blank lines
+            self._text_break = max(self._text_break, strength)
 
     def _write(self, text: str, *, strip_leading: bool = True) -> None:
         """Append text, flushing whatever break was requested before it."""
-        if self._pending:
+        if self._text_break:
             if strip_leading:
                 text = text.lstrip(" ")
                 if not text:
                     return
-            self._parts.append("\n" if self._pending == LINE_BREAK else "\n\n")
-            self._pending = NO_BREAK
-        elif strip_leading and not self._parts:
+            self._text_parts.append("\n" if self._text_break == LINE_BREAK else "\n\n")
+            self._text_break = NO_BREAK
+        elif strip_leading and not self._text_parts:
             text = text.lstrip(" ")
         if text:
-            self._parts.append(text)
+            self._text_parts.append(text)
 
     def _bullet(self) -> None:
         self._break(LINE_BREAK)
-        indent = "  " * max(0, len(self._lists) - 1)
-        if self._lists and self._lists[-1] is not None:
-            ordinal = self._lists[-1] + 1
-            self._lists[-1] = ordinal
+        indent = "  " * max(0, len(self._text_lists) - 1)
+        if self._text_lists and self._text_lists[-1] is not None:
+            ordinal = self._text_lists[-1] + 1
+            self._text_lists[-1] = ordinal
             self._write(f"{indent}{ordinal}. ", strip_leading=False)
         else:
             self._write(f"{indent}• ", strip_leading=False)
@@ -134,9 +143,9 @@ class _TextExtractor(HTMLParser):
         tag = tag.lower()
 
         if tag in SKIP_TAGS:
-            self._skip_depth += 1
+            self._text_skip += 1
             return
-        if self._skip_depth:
+        if self._text_skip:
             return
 
         if tag == "br":
@@ -146,13 +155,13 @@ class _TextExtractor(HTMLParser):
         elif tag in ("ul", "ol"):
             # A list nested inside an item continues that item, so it must not
             # be separated from it by a blank line.
-            self._break(LINE_BREAK if self._lists else BLOCK_BREAK)
-            self._lists.append(0 if tag == "ol" else None)
+            self._break(LINE_BREAK if self._text_lists else BLOCK_BREAK)
+            self._text_lists.append(0 if tag == "ol" else None)
         elif tag == "li":
             self._bullet()
         elif tag in ("td", "th"):
             # Mid-row: no break is pending, so this is not the first cell.
-            if not self._pending and self._parts:
+            if not self._text_break and self._text_parts:
                 self._write(" | ")
         elif tag == "a":
             href = ""
@@ -160,7 +169,7 @@ class _TextExtractor(HTMLParser):
                 if key and key.lower() == "href" and value:
                     href = _absolute(value)
                     break
-            self._links.append((len(self._parts), href))
+            self._text_links.append((len(self._text_parts), href))
         elif tag in LINE_TAGS:
             self._break(LINE_BREAK)
         elif tag in BLOCK_TAGS:
@@ -170,29 +179,29 @@ class _TextExtractor(HTMLParser):
         tag = tag.lower()
 
         if tag in SKIP_TAGS:
-            self._skip_depth = max(0, self._skip_depth - 1)
+            self._text_skip = max(0, self._text_skip - 1)
             return
-        if self._skip_depth:
+        if self._text_skip:
             return
 
         if tag == "a":
             self._close_link()
         elif tag in ("ul", "ol"):
-            if self._lists:
-                self._lists.pop()
-            self._break(LINE_BREAK if self._lists else BLOCK_BREAK)
+            if self._text_lists:
+                self._text_lists.pop()
+            self._break(LINE_BREAK if self._text_lists else BLOCK_BREAK)
         elif tag in LINE_TAGS:
             self._break(LINE_BREAK)
         elif tag in BLOCK_TAGS:
             self._break(BLOCK_BREAK)
 
     def _close_link(self) -> None:
-        if not self._links:
+        if not self._text_links:
             return
-        start, href = self._links.pop()
+        start, href = self._text_links.pop()
         if not href:
             return
-        text = "".join(self._parts[start:]).strip()
+        text = "".join(self._text_parts[start:]).strip()
         # Only spell the target out when the link text does not already carry it.
         if not text:
             self._write(href)
@@ -200,13 +209,13 @@ class _TextExtractor(HTMLParser):
             self._write(f" ({href})")
 
     def handle_data(self, data: str) -> None:
-        if self._skip_depth or not data:
+        if self._text_skip or not data:
             return
         # Source newlines are formatting, not content: only tags break lines.
         self._write(_WHITESPACE_RE.sub(" ", data))
 
     def text(self) -> str:
-        return "".join(self._parts)
+        return "".join(self._text_parts)
 
 
 def _normalize_line(line: str) -> str:
@@ -245,7 +254,7 @@ def html_to_text(value, *, limit: int = MAX_DESCRIPTION_CHARS) -> str:
         except Exception:
             # A fragment we cannot parse is worth less than the rest of the row:
             # fall back to stripped tags rather than failing the whole lookup.
-            text = _normalize(html_module.unescape(_TAG_RE.sub(" ", raw)))
+            text = _normalize(html_module.unescape(_TAG_RE.sub(" ", _SKIPPED_BLOCK_RE.sub(" ", raw))))
     else:
         text = _normalize(html_module.unescape(raw))
 

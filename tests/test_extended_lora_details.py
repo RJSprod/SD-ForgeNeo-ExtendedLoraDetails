@@ -1121,6 +1121,34 @@ def test_checkpoint_titles_outside_the_assigned_folders_are_dropped():
         assert kept == ["zit.safetensors", "xl.safetensors", "mystery.safetensors"]
 
 
+# ------------------------------------------------------- descriptions, again
+
+
+def test_the_extractor_keeps_its_state_out_of_htmlparsers_way():
+    # Python 3.13 gave HTMLParser a ``_pending`` buffer; an extractor that also
+    # used the name broke close(), and every description fell back to stripping.
+    from html.parser import HTMLParser
+
+    own = set(vars(descriptions._TextExtractor())) - set(vars(HTMLParser()))
+    assert own and all(name.startswith("_text_") for name in own), own
+    assert descriptions.html_to_text("<p>one</p><ul><li>two</li></ul>") == "one\n\n• two"
+
+
+def test_the_description_fallback_never_leaks_a_script():
+    original = descriptions._TextExtractor.feed
+
+    def broken(self, data):
+        raise ValueError("unparseable")
+
+    descriptions._TextExtractor.feed = broken
+    try:
+        text = descriptions.html_to_text("<p>Kept</p><script>steal()</script><style>p{}</style><b>too</b>")
+    finally:
+        descriptions._TextExtractor.feed = original
+    assert "Kept" in text and "too" in text
+    assert "steal" not in text and "p{}" not in text, text
+
+
 def main() -> int:
     tests = [(name, obj) for name, obj in sorted(globals().items()) if name.startswith("test_") and callable(obj)]
     failures = 0
